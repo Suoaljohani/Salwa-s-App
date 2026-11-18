@@ -1,0 +1,115 @@
+/* Proposed Salwa palette seed; not official hospital identity. */
+:root {
+  color-scheme: dark;
+  --salwa-base: #091619;
+  --salwa-surface: #11282d;
+  --salwa-reading: #102429;
+  --salwa-text: #f1f7f6;
+  --salwa-secondary: #bdcfcc;
+  --salwa-accent: #8bd5c2;
+  --salwa-accent-ink: #0c2620;
+  --salwa-line: rgba(229, 246, 240, .16);
+  --salwa-glass: rgba(24, 51, 55, .84);
+  --salwa-highlight: rgba(245, 255, 252, .12);
+  --salwa-shadow: 0 12px 32px rgba(0, 12, 15, .18);
+  --salwa-radius-control: .8rem;
+  --salwa-radius-panel: 1.3rem;
+  --salwa-radius-nav: 1.5rem;
+  --salwa-blur: 16px;
+  --salwa-space-1: .25rem;
+  --salwa-space-2: .5rem;
+  --salwa-space-3: .75rem;
+  --salwa-space-4: 1rem;
+  --salwa-space-6: 1.5rem;
+  --salwa-space-8: 2rem;
+  --salwa-ui-out: cubic-bezier(.23, 1, .32, 1);
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --salwa-base: #eaf0ef;
+  --salwa-surface: #f7faf9;
+  --salwa-reading: #ffffff;
+  --salwa-text: #132a2e;
+  --salwa-secondary: #405b5e;
+  --salwa-accent: #17634f;
+  --salwa-accent-ink: #ffffff;
+  --salwa-line: rgba(27, 62, 63, .18);
+  --salwa-glass: rgba(247, 251, 249, .9);
+  --salwa-highlight: rgba(255, 255, 255, .92);
+  --salwa-shadow: 0 12px 32px rgba(30, 62, 62, .08);
+}
+.salwa-shell {
+  min-block-size: 100dvh;
+  color: var(--salwa-text);
+  background: var(--salwa-base);
+  direction: rtl;
+  isolation: isolate;
+}
+.salwa-reading {
+  color: var(--salwa-text);
+  background: var(--salwa-reading);
+  border: 1px solid var(--salwa-line);
+  border-radius: var(--salwa-radius-panel);
+}
+.salwa-glass {
+  position: relative;
+  color: var(--salwa-text);
+  background: var(--salwa-surface);
+  border: 1px solid var(--salwa-line);
+  border-radius: var(--salwa-radius-panel);
+  box-shadow: inset 0 1px 0 var(--salwa-highlight), var(--salwa-shadow);
+}
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .salwa-glass {
+    background: var(--salwa-glass);
+    -webkit-backdrop-filter: blur(var(--salwa-blur)) saturate(112%);
+    backdrop-filter: blur(var(--salwa-blur)) saturate(112%);
+  }
+}
+.salwa-bottom-nav {
+  border-radius: var(--salwa-radius-nav);
+  padding-block-end: max(.5rem, env(safe-area-inset-bottom));
+}
+.salwa-focusable:focus-visible {
+  outline: 2px solid var(--salwa-accent);
+  outline-offset: 4px;
+}
+.salwa-numeric {
+  font-variant-numeric: tabular-nums lining-nums;
+  unicode-bidi: isolate;
+}
+.salwa-secondary { color: var(--salwa-secondary); }
+.salwa-control {
+  min-block-size: 44px;
+  min-inline-size: 44px;
+  border-radius: var(--salwa-radius-control);
+  transition: transform 120ms var(--salwa-ui-out), background-color 120ms ease;
+}
+.salwa-control:active { transform: scale(.98); }
+[data-transparency="reduced"] .salwa-glass {
+  background: var(--salwa-surface);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .salwa-glass {
+    background: var(--salwa-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .salwa-control { transition: background-color 100ms ease; }
+  .salwa-control:active { transform: none; }
+}
+@media (forced-colors: active) {
+  .salwa-reading, .salwa-glass, .salwa-control {
+    color: CanvasText;
+    background: Canvas;
+    border: 1px solid CanvasText;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .salwa-focusable:focus-visible { outline-color: Highlight; }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "salwa-glass-system"
+  short_description: "Build a refined Arabic statistics app"
+  default_prompt: "Use $salwa-glass-system for the Salwa application."

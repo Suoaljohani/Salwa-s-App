@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+# Licensed font (Janna LT, Linotype) – supplied privately, not redistributed in this public repo.
+public/fonts/*.ttf
+# Never commit patient data exports.
+*.xlsx
+!tests/fixtures/*.xlsx

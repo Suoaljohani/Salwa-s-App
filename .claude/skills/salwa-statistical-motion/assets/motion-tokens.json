@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "units": "milliseconds",
+  "policy": {
+    "default": "subtle",
+    "repeatDashboardEntrance": false,
+    "numericValues": "final-source-values-only",
+    "soundEnabledByDefault": false
+  },
+  "easing": {
+    "uiOut": [
+      0.23,
+      1,
+      0.32,
+      1
+    ],
+    "uiInOut": [
+      0.77,
+      0,
+      0.175,
+      1
+    ]
+  },
+  "duration": {
+    "press": 120,
+    "popover": 180,
+    "tab": 180,
+    "route": 220,
+    "sheet": 300,
+    "chartEnter": 500,
+    "chartUpdate": 220,
+    "reducedFade": 100
+  },
+  "stagger": {
+    "kpi": 45,
+    "maxItems": 3,
+    "maxTotalDelay": 90
+  },
+  "dashboard": {
+    "headerStart": 0,
+    "kpiStart": 40,
+    "plotStart": 120,
+    "compositionTarget": 650
+  },
+  "reducedMotion": {
+    "translate": 0,
+    "scale": 1,
+    "chartAnimation": false
+  },
+  "caveat": "Proposed starting values. Measure on representative hardware; not a performance guarantee."
+}
