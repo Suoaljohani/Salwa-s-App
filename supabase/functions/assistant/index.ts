@@ -1,126 +1,122 @@
-// Assistant: turns an Arabic question into a validated metric request (Groq tool call),
-// then computes it with public.metric_query under the caller's own session.
-// The model never produces numbers that are shown; it only proposes the structured request.
-// No patient rows are sent to the model: only the question, the field catalog and category names.
+// Assistant: turns an Arabic question into a validated statistics request over any approved dataset
+// (Groq tool call), then computes it with public.dataset_query under the caller's own session.
+// The model never produces the numbers that are shown. Only the question, column names and
+// low-cardinality category values are sent — never rows, identifiers or personal fields.
 import { createClient } from 'npm:@supabase/supabase-js@2.119.0';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MODEL = Deno.env.get('GROQ_MODEL') ?? 'openai/gpt-oss-120b';
-const PROMPT_VERSION = 3;
+const PROMPT_VERSION = 5;
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
+interface Col { key: string; label: string; type: string; role: string; values?: { value: string; n: number }[]; distinct?: number; min?: unknown; max?: unknown }
+interface Ds { id: string; name: string; unit_label: string; mode: string; period_column: string | null; key_column: string | null; version: number; columns: Col[]; row_count: number; coverage: { start: string | null; end_exclusive: string | null; as_of: string | null }[] }
+interface Catalog { datasets: Ds[]; version: number }
 
-const DIMS = ['month', 'day', 'encounter_type', 'department', 'payor', 'discharge_type', 'gender', 'nationality_group', 'age_band'];
+const FILTER_OPS = ['eq', 'neq', 'in', 'not_in', 'gt', 'gte', 'lt', 'lte', 'contains', 'is_null', 'not_null'];
+const MEASURE_OPS = ['count', 'count_distinct', 'sum', 'avg', 'min', 'max'];
 
 const requestSchema = {
-  type: 'object',
-  additionalProperties: false,
+  type: 'object', additionalProperties: false,
   properties: {
-    metric: { type: 'string', enum: ['visits', 'distinct_patients'], description: 'visits = عدد الزيارات. distinct_patients = عدد المرضى المختلفين (كل مريض مرة واحدة).' },
-    start: { type: 'string', description: 'YYYY-MM-DD first local day, inclusive' },
-    end_exclusive: { type: 'string', description: 'YYYY-MM-DD day after the last day (exclusive). July 2026 → 2026-07-01 .. 2026-08-01' },
+    dataset_id: { type: 'string', description: 'id of the dataset from the catalog' },
+    measure: {
+      type: 'object', additionalProperties: false,
+      properties: { op: { type: 'string', enum: MEASURE_OPS }, column: { type: 'string', description: 'column key; required unless op=count' } },
+      required: ['op'],
+    },
     filters: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        encounter_type: { type: 'array', items: { type: 'string' } },
-        department: { type: 'array', items: { type: 'string' } },
-        payor: { type: 'array', items: { type: 'string' } },
-        discharge_type: { type: 'array', items: { type: 'string' } },
-        gender: { type: 'string', enum: ['M', 'F'] },
-        is_saudi: { type: 'boolean' },
-        age_min: { type: 'integer', description: 'inclusive. "18 فأكثر" → 18' },
-        age_max_exclusive: { type: 'integer', description: 'exclusive. "أقل من 14" → 14' },
+      type: 'array', maxItems: 12,
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          column: { type: 'string' }, op: { type: 'string', enum: FILTER_OPS },
+          value: { description: 'string, number, boolean, or array for in/not_in. Dates as YYYY-MM-DD.' },
+        },
+        required: ['column', 'op'],
       },
     },
-    group_by: { type: 'array', items: { type: 'string', enum: DIMS }, maxItems: 2 },
+    group_by: {
+      type: 'array', maxItems: 2,
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          column: { type: 'string' },
+          grain: { type: 'string', enum: ['day', 'month', 'year'], description: 'for date columns' },
+          bins: { type: 'array', items: { type: 'number' }, description: 'for number columns, ascending lower bounds e.g. age [14,18,45,65]' },
+        },
+        required: ['column'],
+      },
+    },
+    period: {
+      type: 'object', additionalProperties: false,
+      description: 'only for datasets that have a period column; Riyadh local days',
+      properties: { start: { type: 'string', description: 'YYYY-MM-DD inclusive' }, end_exclusive: { type: 'string', description: 'YYYY-MM-DD, day after the last day' } },
+      required: ['start', 'end_exclusive'],
+    },
   },
-  required: ['metric', 'start', 'end_exclusive', 'filters', 'group_by'],
+  required: ['dataset_id', 'measure', 'filters', 'group_by'],
 };
 
 const tools = [
-  {
-    type: 'function',
-    function: {
-      name: 'statistics',
-      description: 'Compute one statistic, or two for a comparison (e.g. two months). Use exactly the catalog values for categorical filters.',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          requests: { type: 'array', items: requestSchema, minItems: 1, maxItems: 2 },
-          interpretation: { type: 'string', description: 'One short Arabic sentence describing exactly what will be counted.' },
-          assumptions: { type: 'array', items: { type: 'string' }, description: 'Short Arabic notes for any default applied (e.g. year assumed).' },
-        },
-        required: ['requests', 'interpretation'],
-      },
+  { type: 'function', function: { name: 'statistics', description: 'Compute one statistic, or two for a comparison.', parameters: {
+    type: 'object', additionalProperties: false,
+    properties: {
+      requests: { type: 'array', items: requestSchema, minItems: 1, maxItems: 2 },
+      interpretation: { type: 'string', description: 'One short Arabic sentence of exactly what is counted.' },
+      assumptions: { type: 'array', items: { type: 'string' }, description: 'Short Arabic notes for defaults applied.' },
     },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'clarify',
-      description: 'Ask one short Arabic question when the answer would change materially (unknown year, unclear whether visits or patients).',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: { question: { type: 'string' }, options: { type: 'array', items: { type: 'string' }, maxItems: 4 } },
-        required: ['question'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'unsupported',
-      description: 'The data source cannot answer (e.g. CTAS, diagnoses, beds, or a non-statistical request).',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: { reason: { type: 'string', description: 'Short Arabic reason' } },
-        required: ['reason'],
-      },
-    },
-  },
+    required: ['requests', 'interpretation'] } } },
+  { type: 'function', function: { name: 'clarify', description: 'Ask one short Arabic question when the answer would change materially.', parameters: {
+    type: 'object', additionalProperties: false,
+    properties: { question: { type: 'string' }, options: { type: 'array', items: { type: 'string' }, maxItems: 4 } }, required: ['question'] } } },
+  { type: 'function', function: { name: 'unsupported', description: 'No dataset contains what is asked.', parameters: {
+    type: 'object', additionalProperties: false, properties: { reason: { type: 'string' } }, required: ['reason'] } } },
 ];
 
-interface Catalog {
-  dataset_version: number;
-  definition_version: number;
-  first_visit: string | null;
-  last_visit: string | null;
-  coverage: { start: string; end_exclusive: string }[];
-  values: Record<string, { value: string; n: number }[]>;
+const TYPE_AR: Record<string, string> = { text: 'نص', number: 'رقم', date: 'تاريخ', datetime: 'تاريخ ووقت', boolean: 'نعم/لا' };
+
+function describeCatalog(cat: Catalog): string {
+  return cat.datasets.filter((d) => d.row_count > 0).map((d) => {
+    const cov = d.mode === 'append'
+      ? `تراكمي، عمود الفترة ${d.period_column ?? '—'}، مغطى: ${d.coverage.map((c) => `${c.start}..${c.end_exclusive}`).join(', ') || '—'}`
+      : `لقطة (آخر نسخة${d.coverage.at(-1)?.as_of ? ` بتاريخ ${d.coverage.at(-1)!.as_of}` : ''})`;
+    const cols = d.columns.filter((c) => c.role !== 'ignore').map((c) => {
+      let extra = '';
+      if (c.role === 'identifier') extra = 'معرّف (للعد المميز فقط)';
+      else if (c.type === 'text' && c.values && (c.distinct ?? c.values.length) <= 40) extra = c.values.slice(0, 25).map((v) => v.value).join(' | ');
+      else if (c.type === 'text') extra = `${c.distinct ?? '?'} قيمة مختلفة`;
+      else if (c.min != null) extra = `${c.min}..${c.max}`;
+      return `  - ${c.key} (${c.label}، ${TYPE_AR[c.type] ?? c.type}): ${extra}`;
+    }).join('\n');
+    return `[${d.id}] ${d.name} — الوحدة: ${d.unit_label} — ${cov} — ${d.row_count} سجل\n${cols}`;
+  }).join('\n\n');
 }
 
 function systemPrompt(cat: Catalog, today: string): string {
-  const vals = (k: string) => (cat.values[k] ?? []).slice(0, 30).map((v) => v.value).join(' | ') || '—';
-  const cov = cat.coverage.map((c) => `${c.start}..${c.end_exclusive}`).join(', ') || 'لا توجد بيانات معتمدة';
   return [
-    'أنت محلل يحوّل أسئلة رئيسة قسم الإحصاء الطبي إلى طلب إحصائي منظم عبر الأدوات فقط. لا تكتب أرقامًا.',
-    `اليوم (توقيت الرياض): ${today}. الفترات المغطاة بالبيانات المعتمدة: ${cov}.`,
+    'أنت محلل يحوّل أسئلة رئيسة قسم الإحصاء الطبي إلى طلب إحصائي منظم عبر الأدوات فقط. لا تكتب أرقامًا ولا نتائج.',
+    `اليوم بتوقيت الرياض: ${today}.`,
     'قواعد:',
-    '- "زيارات/مراجعات" = visits. "مرضى/مراجعين مختلفين/أشخاص" = distinct_patients. إن كان الغموض يغير العدد اسأل بـ clarify.',
-    '- الشهر بلا سنة: استخدم آخر سنة يقع فيها ذلك الشهر ضمن البيانات أو قبل اليوم، واذكر ذلك في assumptions.',
-    '- "الشهر الماضي" = الشهر التقويمي السابق لليوم. "الربع الأول" = يناير–مارس. end_exclusive هو اليوم التالي لآخر يوم.',
-    '- "18 فأكثر" → age_min 18. "أكبر من 18" → age_min 19. "أقل من 18" → age_max_exclusive 18. الأطفال دون تحديد → اسأل.',
-    '- "سعوديين" → is_saudi true. "ذكور" → gender M. "إناث/نساء" → gender F.',
-    '- "حسب/توزيع/موزعة" → group_by. "شهريًا" → month. المقارنة بين فترتين → requests بعنصرين بالمرشحات نفسها.',
-    '- للمتابعات مثل "والنساء فقط؟" عدّل الطلب السابق المرفق وأبقِ بقية المرشحات.',
-    '- CTAS والتشخيص والأسرّة غير متاحة في المصدر → unsupported.',
-    '- لا ترفض ولا تسأل لأن الفترة خارج التغطية؛ أرسل الطلب كما هو وسيظهر النظام أن البيانات غير متاحة.',
-    '- خاطب المستخدمة بصيغة المؤنث وبعبارات قصيرة.',
-    `قيم encounter_type المتاحة: ${vals('encounter_type')}`,
-    `قيم department المتاحة: ${vals('department')}`,
-    `قيم payor: ${vals('payor')}. قيم discharge_type: ${vals('discharge_type')}`,
-    'الطوارئ = encounter_type "Emergency". العيادات = "Outpatient". استخدم department فقط عند ذكر قسم بعينه.',
+    '- اختر قاعدة البيانات المناسبة من الفهرس. إن احتمل السؤال أكثر من قاعدة وتغير الجواب فاسأل بـ clarify.',
+    '- العد: measure.op=count. «مختلفين/بدون تكرار» = count_distinct على عمود المعرّف المناسب (مثل رقم الملف للمرضى، الرقم الوظيفي للموظفين).',
+    '- متوسط/مجموع/أعلى/أدنى على أعمدة الأرقام فقط.',
+    '- المرشحات بالقيم كما تظهر في الفهرس حرفيًا. «18 فأكثر» = gte 18، «أكبر من 18» = gt 18، «أقل من 18» = lt 18.',
+    '- «حسب X» = group_by. أعمدة التاريخ تحتاج grain (month افتراضيًا، day لليومي). أعمدة الأرقام مثل العمر تحتاج bins (العمر: [14,18,45,65]).',
+    '- period فقط لقواعد البيانات التراكمية ذات عمود فترة. «الشهر الماضي» = الشهر التقويمي السابق. end_exclusive = اليوم التالي لآخر يوم.',
+    '- الشهر بلا سنة: أحدث سنة لا تتجاوز اليوم، واذكر ذلك في assumptions. لا ترفض لأن الفترة غير مغطاة؛ النظام يوضح ذلك.',
+    '- المقارنة بين فترتين: requests بعنصرين بالمرشحات نفسها.',
+    '- المتابعة مثل «والنساء فقط؟» تعدّل الطلب السابق المرفق.',
+    '- إن لم يوجد عمود يجيب عن السؤال (مثل CTAS) فاستخدم unsupported واذكر قاعدة البيانات.',
+    '- خاطب المستخدمة بصيغة المؤنث وباختصار.',
+    'الفهرس:',
+    describeCatalog(cat),
   ].join('\n');
 }
 
@@ -130,47 +126,63 @@ async function sha256(text: string): Promise<string> {
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-function sanitize(req: Record<string, unknown>, cat: Catalog) {
-  const f = (req.filters ?? {}) as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const k of ['encounter_type', 'department', 'payor', 'discharge_type']) {
-    const arr = f[k];
-    if (!Array.isArray(arr) || arr.length === 0) continue;
-    const allowed = new Set((cat.values[k] ?? []).map((v) => v.value));
-    const kept = arr.filter((x) => typeof x === 'string' && (allowed.size === 0 || allowed.has(x)));
-    if (kept.length !== arr.length) throw new Error(`unknown_value:${k}`);
-    out[k] = kept;
+function sanitize(r: Record<string, unknown>, cat: Catalog) {
+  const ds = cat.datasets.find((d) => d.id === r.dataset_id);
+  if (!ds) throw new Error('unknown_dataset');
+  const col = (k: unknown) => {
+    const c = ds.columns.find((x) => x.key === k && x.role !== 'ignore');
+    if (!c) throw new Error(`unknown_column:${k}`);
+    return c;
+  };
+  const m = (r.measure ?? { op: 'count' }) as { op: string; column?: string };
+  if (!MEASURE_OPS.includes(m.op)) throw new Error('bad_measure');
+  const measure = m.op === 'count' ? { op: 'count' } : { op: m.op, column: col(m.column).key };
+  const filters = ((r.filters as Record<string, unknown>[]) ?? []).slice(0, 12).map((f) => {
+    const c = col(f.column);
+    const op = String(f.op);
+    if (!FILTER_OPS.includes(op)) throw new Error('bad_filter_op');
+    // Categorical values must exist when the full value list is known.
+    const known = c.type === 'text' && c.values && (c.distinct ?? c.values.length) <= c.values.length ? new Set(c.values.map((v) => v.value)) : null;
+    if (known && (op === 'eq' || op === 'neq') && !known.has(String(f.value))) throw new Error(`unknown_value:${c.key}`);
+    if (known && (op === 'in' || op === 'not_in') && !(Array.isArray(f.value) && f.value.every((v) => known.has(String(v))))) throw new Error(`unknown_value:${c.key}`);
+    return op === 'is_null' || op === 'not_null' ? { column: c.key, op } : { column: c.key, op, value: f.value };
+  });
+  const group_by = ((r.group_by as Record<string, unknown>[]) ?? []).slice(0, 2).map((g) => {
+    const c = col(g.column);
+    const out: Record<string, unknown> = { column: c.key };
+    if (c.type === 'date' || c.type === 'datetime') out.grain = ['day', 'month', 'year'].includes(String(g.grain)) ? g.grain : 'month';
+    if (c.type === 'number' && Array.isArray(g.bins) && g.bins.length) out.bins = (g.bins as number[]).filter(Number.isFinite).slice(0, 20).sort((a, b) => a - b);
+    return out;
+  });
+  let period: { start: string; end_exclusive: string } | null = null;
+  const p = r.period as { start?: string; end_exclusive?: string } | undefined;
+  if (p && ds.period_column) {
+    if (!DAY.test(String(p.start)) || !DAY.test(String(p.end_exclusive))) throw new Error('bad_dates');
+    period = { start: p.start!, end_exclusive: p.end_exclusive! };
   }
-  if (f.gender === 'M' || f.gender === 'F') out.gender = f.gender;
-  if (typeof f.is_saudi === 'boolean') out.is_saudi = f.is_saudi;
-  for (const k of ['age_min', 'age_max_exclusive']) if (Number.isInteger(f[k])) out[k] = f[k];
-  const g = Array.isArray(req.group_by) ? req.group_by.filter((d) => DIMS.includes(d as string)).slice(0, 2) : [];
-  if (!DAY.test(String(req.start)) || !DAY.test(String(req.end_exclusive))) throw new Error('bad_dates');
-  return { metric: req.metric === 'distinct_patients' ? 'distinct_patients' : 'visits', start: req.start, end_exclusive: req.end_exclusive, filters: out, group_by: g };
+  return { dataset_id: ds.id, measure, filters, group_by, period };
 }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method' }, 405);
-  const auth = req.headers.get('Authorization') ?? '';
   const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_ANON_KEY')!, {
-    global: { headers: { Authorization: auth } },
+    global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
     auth: { persistSession: false },
   });
-
   let body: { question?: string; context?: unknown; today?: string };
   try { body = await req.json(); } catch { return json({ error: 'bad_json' }, 400); }
   const question = String(body.question ?? '').trim().slice(0, 600);
   if (!question) return json({ error: 'empty' }, 400);
   const today = DAY.test(String(body.today)) ? String(body.today) : new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10);
 
-  const { data: cat, error: catErr } = await supabase.rpc('data_catalog');
+  const { data: catData, error: catErr } = await supabase.rpc('ds_catalog');
   if (catErr) return json({ error: 'forbidden' }, 403);
-  // Health check from Settings: no model call, no quota used.
   if (question === '__health') return json({ kind: 'health', ai_configured: !!Deno.env.get('GROQ_API_KEY'), model: MODEL });
-  const catalog = cat as Catalog;
+  const catalog = catData as Catalog;
+  if (!catalog.datasets.some((d) => d.row_count > 0)) return json({ kind: 'unsupported', reason: 'لا توجد بيانات معتمدة بعد. ارفعي ملفًا من صفحة البيانات واعتمديه.' });
 
-  const key = await sha256(JSON.stringify([PROMPT_VERSION, MODEL, catalog.dataset_version, catalog.definition_version, today.slice(0, 7), question.replace(/\s+/g, ' '), body.context ?? null]));
+  const key = await sha256(JSON.stringify([PROMPT_VERSION, MODEL, catalog.version, today.slice(0, 7), question.replace(/\s+/g, ' '), body.context ?? null]));
   let decision: { tool: string; args: Record<string, unknown> } | null = null;
   let cached = false;
   const { data: hit } = await supabase.from('ai_cache').select('request').eq('cache_key', key).maybeSingle();
@@ -180,21 +192,18 @@ Deno.serve(async (req) => {
     const apiKey = Deno.env.get('GROQ_API_KEY');
     if (!apiKey) return json({ kind: 'ai_unavailable', reason: 'missing_key' });
     const messages: { role: string; content: string }[] = [{ role: 'system', content: systemPrompt(catalog, today) }];
-    if (body.context) messages.push({ role: 'user', content: `الطلب السابق (JSON): ${JSON.stringify(body.context).slice(0, 1200)}` });
+    if (body.context) messages.push({ role: 'user', content: `الطلب السابق (JSON): ${JSON.stringify(body.context).slice(0, 1500)}` });
     messages.push({ role: 'user', content: question });
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 20_000);
+    const timer = setTimeout(() => ctrl.abort(), 25_000);
     let res: Response;
     try {
       res = await fetch(GROQ_URL, {
-        method: 'POST',
-        signal: ctrl.signal,
+        method: 'POST', signal: ctrl.signal,
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: MODEL, messages, tools, tool_choice: 'required', temperature: 0, reasoning_effort: 'low', include_reasoning: false, max_completion_tokens: 700 }),
+        body: JSON.stringify({ model: MODEL, messages, tools, tool_choice: 'required', temperature: 0, reasoning_effort: 'low', include_reasoning: false, max_completion_tokens: 900 }),
       });
-    } catch {
-      return json({ kind: 'ai_unavailable', reason: 'timeout' });
-    } finally { clearTimeout(timer); }
+    } catch { return json({ kind: 'ai_unavailable', reason: 'timeout' }); } finally { clearTimeout(timer); }
     if (res.status === 429) {
       const ra = Number(res.headers.get('retry-after') ?? '0');
       return json({ kind: 'rate_limited', retry_after: Number.isFinite(ra) && ra > 0 ? Math.ceil(ra) : 30 });
@@ -203,18 +212,14 @@ Deno.serve(async (req) => {
     const out = await res.json();
     const call = out?.choices?.[0]?.message?.tool_calls?.[0];
     if (!call) return json({ kind: 'ai_unavailable', reason: 'no_tool_call' });
-    let args: Record<string, unknown> = {};
-    try { args = JSON.parse(call.function.arguments || '{}'); } catch { return json({ kind: 'ai_unavailable', reason: 'bad_args' }); }
-    decision = { tool: call.function.name, args };
+    try { decision = { tool: call.function.name, args: JSON.parse(call.function.arguments || '{}') }; } catch { return json({ kind: 'ai_unavailable', reason: 'bad_args' }); }
   }
 
-  if (decision.tool === 'clarify') {
+  if (decision.tool === 'clarify' || decision.tool === 'unsupported') {
     if (!cached) await supabase.from('ai_cache').upsert({ cache_key: key, request: decision });
-    return json({ kind: 'clarify', question: decision.args.question, options: decision.args.options ?? [] });
-  }
-  if (decision.tool === 'unsupported') {
-    if (!cached) await supabase.from('ai_cache').upsert({ cache_key: key, request: decision });
-    return json({ kind: 'unsupported', reason: decision.args.reason });
+    return decision.tool === 'clarify'
+      ? json({ kind: 'clarify', question: decision.args.question, options: decision.args.options ?? [] })
+      : json({ kind: 'unsupported', reason: decision.args.reason });
   }
   let requests: ReturnType<typeof sanitize>[];
   try {
@@ -224,20 +229,11 @@ Deno.serve(async (req) => {
     return json({ kind: 'ai_unavailable', reason: `invalid_request:${(e as Error).message}` });
   }
   if (!cached) await supabase.from('ai_cache').upsert({ cache_key: key, request: decision });
-
   const results = [];
   for (const r of requests) {
-    const { data, error } = await supabase.rpc('metric_query', { p_req: r });
+    const { data, error } = await supabase.rpc('dataset_query', { p_req: r });
     if (error) return json({ kind: 'error', message: error.message });
     results.push(data);
   }
-  return json({
-    kind: 'answer',
-    interpretation: decision.args.interpretation ?? '',
-    assumptions: decision.args.assumptions ?? [],
-    requests,
-    results,
-    cached,
-    model: MODEL,
-  });
+  return json({ kind: 'answer', interpretation: decision.args.interpretation ?? '', assumptions: decision.args.assumptions ?? [], requests, results, cached, model: MODEL });
 });

@@ -2,30 +2,39 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 
 import { AnswerCard } from '../components/AnswerCard';
 import { IconSend, IconSpinner, IconTrash } from '../components/Icons';
 import { Notice } from '../components/ui';
-import { askAssistant, getCatalog, type AssistantReply } from '../lib/metrics/engine';
-import type { DataCatalog, MetricRequest } from '../lib/metrics/types';
+import { askAssistant, type AssistantReply } from '../lib/metrics/engine';
+import { useCatalog } from '../lib/catalogStore';
+import type { Catalog, StatRequest } from '../lib/metrics/types';
 import { USER_NAME } from '../lib/config';
-import { addDays, addMonths, formatPeriod } from '../lib/dates';
-import { monthLabel } from '../lib/metrics/catalog';
+import { addDays, addMonths } from '../lib/dates';
+import { monthLabel, keyLabel } from '../lib/metrics/catalog';
 import { fmtNum } from '../lib/format';
-import { useApp } from '../lib/appState';
 import { usePrefs } from '../lib/prefs';
 
-interface Turn { id: string; question: string; reply: AssistantReply | null; context: MetricRequest | null }
+interface Turn { id: string; question: string; reply: AssistantReply | null; context: StatRequest | null }
 
-const HISTORY_KEY = 'salwa.chat.v1';
-/** Suggestions point at the latest fully covered month, so they never land on an empty period. */
-function suggestions(cat: DataCatalog | null): string[] {
-  const end = cat?.coverage.length ? cat.coverage[cat.coverage.length - 1].end_exclusive : null;
-  const last = end ? addDays(end, -1) : null;
-  const month = last ? (addDays(last, 1).endsWith('-01') ? last.slice(0, 7) : addMonths(`${last.slice(0, 7)}-01`, -1).slice(0, 7)) : null;
-  const m = month ? monthLabel(month) : 'الشهر الماضي';
-  return [
-    `كم عدد زيارات الطوارئ في ${m} لمن أعمارهم 18 سنة فأكثر؟`,
-    `وزعي زيارات الطوارئ حسب الجنس في ${m}`,
-    `كم عدد المرضى المختلفين الذين راجعوا الطوارئ في ${m}؟`,
-    `وزعي زيارات العيادات حسب القسم في ${m}`,
-  ];
+const HISTORY_KEY = 'salwa.chat.v2';
+/** Suggestions built from the approved datasets, so they never point at missing data. */
+function suggestions(cat: Catalog | null): string[] {
+  const out: string[] = [];
+  for (const d of cat?.datasets.filter((x) => x.row_count > 0) ?? []) {
+    const unitPl = d.unit_label === 'زيارة' ? 'الزيارات' : d.unit_label === 'موظف' ? 'الموظفين' : d.name;
+    const dim = d.columns.find((c) => c.role === 'dimension' && (c.values?.length ?? 0) >= 2 && (c.values?.length ?? 0) <= 12);
+    const dim2 = d.columns.find((c) => c.role === 'dimension' && c !== dim && (c.values?.length ?? 0) >= 2 && (c.values?.length ?? 0) <= 12);
+    let when = '';
+    if (d.period_column && d.coverage.length) {
+      const end = d.coverage[d.coverage.length - 1].end_exclusive;
+      if (end) {
+        const last = addDays(end, -1);
+        const month = addDays(last, 1).endsWith('-01') ? last.slice(0, 7) : addMonths(`${last.slice(0, 7)}-01`, -1).slice(0, 7);
+        when = ` في ${monthLabel(month)}`;
+      }
+    }
+    out.push(`كم عدد ${unitPl}${when}؟`);
+    if (dim) out.push(`وزعي ${unitPl} حسب ${dim.label}${when}`);
+    if (dim2 && dim?.values?.[0]) out.push(`كم عدد ${unitPl} ${keyLabel(dim, undefined, dim.values[0].value)} حسب ${dim2.label}${when}`);
+  }
+  return out.slice(0, 5);
 }
 
 function loadHistory(): Turn[] {
@@ -37,21 +46,14 @@ function loadHistory(): Turn[] {
 
 export function AssistantPage(_: { onOpenIndicators: () => void; onExport: () => void }) {
   const demo = usePrefs((p) => p.demoMode);
-  const tick = useApp((s) => s.datasetTick);
   const [turns, setTurns] = useState<Turn[]>(() => (demo ? [] : loadHistory()));
   const [text, setText] = useState('');
-  const [catalog, setCatalog] = useState<DataCatalog | null>(null);
-  const [catalogError, setCatalogError] = useState(false);
+  const { catalog, state: catState } = useCatalog();
+  const catalogError = catState === 'error';
   const pending = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    let alive = true;
-    setCatalogError(false);
-    getCatalog().then((c) => alive && setCatalog(c)).catch(() => alive && setCatalogError(true));
-    return () => { alive = false; };
-  }, [demo, tick]);
 
   useEffect(() => { setTurns(demo ? [] : loadHistory()); }, [demo]);
   useEffect(() => {
@@ -63,7 +65,7 @@ export function AssistantPage(_: { onOpenIndicators: () => void; onExport: () =>
   const lastContext = (() => {
     for (let i = turns.length - 1; i >= 0; i--) {
       const r = turns[i].reply;
-      if (r?.kind === 'answer') return r.results[0].request;
+      if (r?.kind === 'answer') return r.results[0].request as StatRequest;
     }
     return null;
   })();
@@ -101,9 +103,10 @@ export function AssistantPage(_: { onOpenIndicators: () => void; onExport: () =>
   };
   const busy = turns.some((t) => !t.reply);
 
+  const ready = catalog?.datasets.filter((d) => d.row_count > 0) ?? [];
   const coverageLine = catalog
-    ? catalog.coverage.length
-      ? `آخر تحديث معتمد: ${formatPeriod(catalog.coverage[0].start, catalog.coverage[catalog.coverage.length - 1].end_exclusive)} — ${fmtNum(catalog.total_visits)} زيارة`
+    ? ready.length
+      ? `البيانات المعتمدة: ${ready.map((d) => `${d.name} (${fmtNum(d.row_count)} ${d.unit_label})`).join('، ')}`
       : 'لا توجد بيانات معتمدة بعد — ابدئي من صفحة البيانات'
     : catalogError ? 'تعذّر قراءة حالة البيانات' : '';
 
@@ -112,7 +115,7 @@ export function AssistantPage(_: { onOpenIndicators: () => void; onExport: () =>
       {turns.length === 0 ? (
         <section className="welcome">
           <h1>أهلًا {USER_NAME}،<br />ما الإحصائية التي تحتاجينها؟</h1>
-          <p>اسألي بالعربية، وستصلك الإجابة بالرقم ووحدته وفترته ومصدره.</p>
+          <p>اسألي بالعربية عن أي بيانات معتمدة — الزيارات، الموظفون، أو غيرها — وستصلك الإجابة بالرقم ووحدته وفترته ومصدره.</p>
         </section>
       ) : (
         <section className="thread" aria-label="المحادثة">
@@ -186,6 +189,8 @@ function Reply({ turn, onPick }: { turn: Turn; onPick: (o: string) => void }) {
 function friendlyError(m: string): string {
   if (/forbidden/.test(m)) return 'الحساب غير مصرح له.';
   if (/bad_dates/.test(m)) return 'الفترة غير صالحة.';
+  if (/dataset_has_no_period/.test(m)) return 'هذه البيانات لقطة بلا فترة زمنية.';
+  if (/measure_needs_number/.test(m)) return 'المتوسط والمجموع يحتاجان عمودًا رقميًا.';
   if (/unsupported_/.test(m)) return 'الطلب يحتوي على حقل غير مدعوم.';
   if (/Failed to fetch|NetworkError/.test(m)) return 'تحققي من الاتصال بالإنترنت.';
   return '';

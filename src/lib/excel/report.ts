@@ -1,9 +1,9 @@
 // Build a new Arabic statistical workbook from one engine result. Numeric cells stay numbers.
 import type ExcelJSType from 'exceljs';
 import { loadExcel } from './readGrid';
-import type { MetricResult } from '../metrics/types';
-import { DIMENSIONS, METRICS, sortKeys, valueLabel } from '../metrics/catalog';
-import { coverageText, exclusionNotes, filterPhrases, periodText, requestTitle } from '../metrics/describe';
+import type { DatasetInfo, StatResult } from '../metrics/types';
+import { MEASURE_LABEL, colOf, keyLabel, sortKeys } from '../metrics/catalog';
+import { coverageText, exclusionNotes, filterPhrase, measurePhrase, periodText, requestTitle } from '../metrics/describe';
 import { formatInstant } from '../dates';
 import { HOSPITAL_NAME } from '../config';
 
@@ -23,35 +23,42 @@ export function safeText(s: string): string {
 }
 
 export interface ReportTable {
-  rowDim: string | null;
-  colDim: string | null;
+  rowHead: string;
+  colHead: string | null;
   rowKeys: string[];
   colKeys: string[];
-  cell: (r: string, c: string) => number;
-  rowTotals: boolean;
+  rowLabel: (k: string) => string;
+  colLabel: (k: string) => string;
+  cell: (r: string, c: string) => number | null;
 }
 
-export function toTable(res: MetricResult): ReportTable {
+export function toTable(res: StatResult, ds: DatasetInfo | undefined): ReportTable {
   const g = res.request.group_by;
-  if (!g.length) return { rowDim: null, colDim: null, rowKeys: ['__total'], colKeys: ['__value'], cell: () => res.value ?? 0, rowTotals: false };
+  const valueHead = res.request.measure.op === 'count' ? res.dataset.unit_label : MEASURE_LABEL[res.request.measure.op];
+  const missing = res.request.measure.op === 'count' || res.request.measure.op === 'count_distinct' || res.request.measure.op === 'sum' ? 0 : null;
+  if (!g.length) return { rowHead: 'البيان', colHead: null, rowKeys: ['__total'], colKeys: ['__value'], rowLabel: () => 'الإجمالي', colLabel: () => valueHead, cell: () => res.value };
+  const c1 = colOf(ds, g[0].column);
+  const rowKeys = sortKeys(c1, g[0], [...new Set(res.rows.map((r) => r.d1!))]);
   if (g.length === 1) {
-    const rows = sortKeys(g[0], res.rows.map((r) => r.d1!));
-    return { rowDim: g[0], colDim: null, rowKeys: rows, colKeys: ['__value'], cell: (r) => res.rows.find((x) => x.d1 === r)?.value ?? 0, rowTotals: false };
+    return { rowHead: c1?.label ?? '', colHead: null, rowKeys, colKeys: ['__value'], rowLabel: (k) => keyLabel(c1, g[0], k), colLabel: () => valueHead,
+      cell: (r) => res.rows.find((x) => x.d1 === r)?.value ?? missing };
   }
-  const rowKeys = sortKeys(g[0], [...new Set(res.rows.map((r) => r.d1!))]);
-  const colKeys = sortKeys(g[1], [...new Set(res.rows.map((r) => r.d2!))]);
-  return { rowDim: g[0], colDim: g[1], rowKeys, colKeys, cell: (r, c) => res.rows.find((x) => x.d1 === r && x.d2 === c)?.value ?? 0, rowTotals: true };
+  const c2 = colOf(ds, g[1].column);
+  const colKeys = sortKeys(c2, g[1], [...new Set(res.rows.map((r) => r.d2!))]);
+  return { rowHead: c1?.label ?? '', colHead: c2?.label ?? '', rowKeys, colKeys, rowLabel: (k) => keyLabel(c1, g[0], k), colLabel: (k) => keyLabel(c2, g[1], k),
+    cell: (r, c) => res.rows.find((x) => x.d1 === r && x.d2 === c)?.value ?? missing };
 }
 
-export async function buildReportWorkbook(res: MetricResult, title?: string): Promise<ArrayBuffer> {
+export async function buildReportWorkbook(res: StatResult, ds: DatasetInfo | undefined, title?: string): Promise<ArrayBuffer> {
   const ExcelJS = await loadExcel();
   const wb = new ExcelJS.Workbook();
   wb.creator = 'مساعد الإحصاء';
   wb.created = new Date(res.extracted_at);
-  const additive = res.request.metric === 'visits';
-  const unit = METRICS[res.request.metric];
-  const t = toTable(res);
-  const nCols = 1 + t.colKeys.length + (t.rowTotals && additive ? 1 : 0);
+  const additive = res.request.measure.op === 'count' || res.request.measure.op === 'sum';
+  const t = toTable(res, ds);
+  const rowTotals = additive && t.colKeys.length > 1;
+  const nCols = 1 + t.colKeys.length + (rowTotals ? 1 : 0);
+  const numFmt = res.request.measure.op === 'avg' ? '#,##0.0' : '#,##0.##';
 
   const ws = wb.addWorksheet('التقرير', {
     views: [{ rightToLeft: true, state: 'frozen', ySplit: 8 }],
@@ -66,19 +73,17 @@ export async function buildReportWorkbook(res: MetricResult, title?: string): Pr
     c.font = { name: FONT, size: 11, color: { argb: INK }, ...opts };
     c.alignment = { horizontal: 'right', vertical: 'middle', wrapText: true, readingOrder: 'rtl' };
   };
-  put(1, HOSPITAL_NAME, { size: 11, color: { argb: 'FF46615F' } });
-  put(2, title?.trim() || requestTitle(res.request), { size: 15, bold: true });
-  put(3, `الفترة: ${periodText(res.request)} (من ${res.request.start} حتى ما قبل ${res.request.end_exclusive}، بتوقيت الرياض)`);
-  put(4, `وحدة العد: ${unit.label} — ${unit.definition}`);
-  put(5, `المرشحات: ${filterPhrases(res.request.filters).join('، ') || 'بلا مرشحات'}`);
-  put(6, `${coverageText(res).text}${exclusionNotes(res).length ? ` — ${exclusionNotes(res).join('؛ ')}` : ''}`, { color: { argb: res.coverage.status === 'complete' ? 'FF136A58' : 'FF8A5A06' } });
+  put(1, `${HOSPITAL_NAME} — ${res.dataset.name}`, { size: 11, color: { argb: 'FF46615F' } });
+  put(2, title?.trim() || requestTitle(ds, res.request), { size: 15, bold: true });
+  put(3, `الفترة: ${periodText(res)}${res.request.period ? ` (من ${res.request.period.start} حتى ما قبل ${res.request.period.end_exclusive}، بتوقيت الرياض)` : ''}`);
+  put(4, `الحساب: ${measurePhrase(ds, res.request)} — كل سجل = ${res.dataset.unit_label}`);
+  put(5, `المرشحات: ${res.request.filters.map((f) => filterPhrase(ds, f)).join('، ') || 'بلا مرشحات'}`);
+  put(6, `${coverageText(res).text}${exclusionNotes(res).length ? ` — ${exclusionNotes(res).join('؛ ')}` : ''}`, { color: { argb: res.coverage?.status === 'partial' ? 'FF8A5A06' : 'FF136A58' } });
   ws.getRow(2).height = 26;
   [3, 4, 5, 6].forEach((r) => (ws.getRow(r).height = 30));
 
   const head = 8;
-  const headers = [t.rowDim ? DIMENSIONS[t.rowDim as keyof typeof DIMENSIONS] : 'البيان',
-    ...t.colKeys.map((c) => (c === '__value' ? unit.label : valueLabel(t.colDim!, c))),
-    ...(t.rowTotals && additive ? ['الإجمالي'] : [])];
+  const headers = [t.rowHead || 'البيان', ...t.colKeys.map((c) => t.colLabel(c)), ...(rowTotals ? ['الإجمالي'] : [])];
   headers.forEach((h, i) => {
     const c = ws.getCell(head, i + 1);
     c.value = safeText(h);
@@ -92,23 +97,22 @@ export async function buildReportWorkbook(res: MetricResult, title?: string): Pr
   t.rowKeys.forEach((rk, i) => {
     const r = head + 1 + i;
     const label = ws.getCell(r, 1);
-    label.value = rk === '__total' ? 'الإجمالي' : safeText(valueLabel(t.rowDim!, rk));
+    label.value = safeText(t.rowLabel(rk));
     label.font = { name: FONT, color: { argb: INK } };
     label.alignment = { horizontal: 'right', readingOrder: 'rtl' };
     label.border = border;
     t.colKeys.forEach((ck, j) => {
       const c = ws.getCell(r, 2 + j);
       c.value = t.cell(rk, ck);
-      c.numFmt = '#,##0';
+      c.numFmt = numFmt;
       c.font = { name: FONT, color: { argb: INK } };
       c.alignment = { horizontal: 'center' };
       c.border = border;
     });
-    if (t.rowTotals && additive) {
+    if (rowTotals) {
       const c = ws.getCell(r, 2 + t.colKeys.length);
-      const from = ws.getCell(r, 2).address, to = ws.getCell(r, 1 + t.colKeys.length).address;
-      c.value = { formula: `SUM(${from}:${to})`, result: t.colKeys.reduce((a, ck) => a + t.cell(rk, ck), 0) };
-      c.numFmt = '#,##0';
+      c.value = { formula: `SUM(${ws.getCell(r, 2).address}:${ws.getCell(r, 1 + t.colKeys.length).address})`, result: t.colKeys.reduce((a, ck) => a + (t.cell(rk, ck) ?? 0), 0) };
+      c.numFmt = numFmt;
       c.font = { name: FONT, bold: true, color: { argb: INK } };
       c.alignment = { horizontal: 'center' };
       c.border = border;
@@ -117,49 +121,44 @@ export async function buildReportWorkbook(res: MetricResult, title?: string): Pr
   });
 
   let after = head + 1 + t.rowKeys.length;
-  if (t.rowDim) {
+  if (res.request.group_by.length) {
     const tr = after;
     const lc = ws.getCell(tr, 1);
-    lc.value = additive ? 'الإجمالي' : 'الإجمالي (مرضى مختلفون، لا يساوي مجموع الفئات)';
+    lc.value = additive ? 'الإجمالي' : res.request.measure.op === 'count_distinct' ? 'الإجمالي (بدون تكرار، لا يساوي مجموع الفئات)' : 'القيمة الإجمالية';
     lc.font = { name: FONT, bold: true };
     lc.alignment = { horizontal: 'right', readingOrder: 'rtl', wrapText: true };
-    const cols = t.colKeys.length + (t.rowTotals && additive ? 1 : 0);
+    lc.border = { top: { style: 'medium', color: { argb: ACCENT } } };
+    const cols = t.colKeys.length + (rowTotals ? 1 : 0);
     for (let j = 0; j < cols; j++) {
       const c = ws.getCell(tr, 2 + j);
       if (additive) {
-        const from = ws.getCell(head + 1, 2 + j).address, to = ws.getCell(tr - 1, 2 + j).address;
-        const sum = j < t.colKeys.length ? t.rowKeys.reduce((a, rk) => a + t.cell(rk, t.colKeys[j]), 0) : (res.value ?? 0);
-        c.value = { formula: `SUM(${from}:${to})`, result: sum };
-      } else {
-        c.value = j === 0 && t.colKeys.length === 1 ? res.value ?? 0 : null;
-      }
-      c.numFmt = '#,##0';
+        const sum = j < t.colKeys.length ? t.rowKeys.reduce((a, rk) => a + (t.cell(rk, t.colKeys[j]) ?? 0), 0) : (res.value ?? 0);
+        c.value = { formula: `SUM(${ws.getCell(head + 1, 2 + j).address}:${ws.getCell(tr - 1, 2 + j).address})`, result: sum };
+      } else c.value = j === 0 && t.colKeys.length === 1 ? res.value : null;
+      c.numFmt = numFmt;
       c.font = { name: FONT, bold: true };
       c.alignment = { horizontal: 'center' };
       c.border = { top: { style: 'medium', color: { argb: ACCENT } } };
     }
-    lc.border = { top: { style: 'medium', color: { argb: ACCENT } } };
     after = tr + 1;
   }
 
   const foot = after + 1;
-  put(foot, `المصدر: ${res.sources.map((s) => s.file_name).join('، ') || '—'} — إصدار البيانات ${res.dataset_version}، تعريف المؤشر ${res.definition_version}`, { size: 9, color: { argb: 'FF46615F' } });
+  put(foot, `المصدر: ${res.sources.map((s) => s.file_name).join('، ') || '—'} — إصدار البيانات ${res.dataset_version}`, { size: 9, color: { argb: 'FF46615F' } });
   put(foot + 1, `تاريخ الاستخراج: ${formatInstant(res.extracted_at)}`, { size: 9, color: { argb: 'FF46615F' } });
   if (res.demo) put(foot + 2, 'تنبيه: بيانات تجريبية مولّدة للعرض، ليست أرقام المستشفى.', { size: 10, bold: true, color: { argb: 'FFA32F3A' } });
-
   ws.getColumn(1).width = 34;
   for (let j = 2; j <= nCols; j++) ws.getColumn(j).width = 14;
   ws.pageSetup.printArea = `A1:${ws.getCell(foot + 2, lastCol).address}`;
 
   const m = wb.addWorksheet('المنهجية', { views: [{ rightToLeft: true }] });
   const lines: [string, string][] = [
-    ['المؤشر', unit.label],
-    ['التعريف', unit.definition],
-    ['حدود الفترة', 'بداية اليوم الأول حتى ما قبل بداية اليوم التالي لآخر يوم، بتوقيت الرياض (UTC+3).'],
-    ['العمر', 'العمر بالسنوات وقت الزيارة كما ورد في المصدر. «18 فأكثر» تشمل من عمره 18 سنة.'],
-    ['القيم المفقودة', 'السجل بلا قيمة للحقل المرشَّح يُستبعد ويُذكر عدده، ولا يُعامل كصفر.'],
-    ['التغطية', `${res.coverage.covered_days} يومًا مغطى من ${res.coverage.total_days}`],
-    ['البيانات الشخصية', 'لا يتضمن التقرير أسماء أو أرقام هوية أو ملفات.'],
+    ['قاعدة البيانات', `${res.dataset.name} — كل سجل = ${res.dataset.unit_label}`],
+    ['الحساب', measurePhrase(ds, res.request)],
+    ['حدود الفترة', res.request.period ? 'بداية اليوم الأول حتى ما قبل بداية اليوم التالي لآخر يوم، بتوقيت الرياض (UTC+3).' : periodText(res)],
+    ['القيم المفقودة', 'السجل بلا قيمة للحقل المرشَّح أو المحسوب يُستبعد ويُذكر عدده، ولا يُعامل كصفر.'],
+    ['التغطية', res.coverage ? `${res.coverage.covered_days} يومًا مغطى من ${res.coverage.total_days}` : coverageText(res).text],
+    ['البيانات الشخصية', 'لا يتضمن التقرير أسماء أو أرقام هوية؛ المعرّفات مشفّرة ولا تظهر.'],
   ];
   lines.forEach(([k, v], i) => {
     const a = m.getCell(i + 1, 1); a.value = k; a.font = { name: FONT, bold: true };
@@ -167,7 +166,6 @@ export async function buildReportWorkbook(res: MetricResult, title?: string): Pr
   });
   m.getColumn(1).width = 18;
   m.getColumn(2).width = 80;
-
   return (await wb.xlsx.writeBuffer()) as ArrayBuffer;
 }
 

@@ -3,14 +3,14 @@ import { FileDrop } from '../components/FileDrop';
 import { RequestEditor } from '../components/RequestEditor';
 import { IconCheck, IconDownload, IconSpinner } from '../components/Icons';
 import { Notice, Pill } from '../components/ui';
-import { getCatalog, queryMetric } from '../lib/metrics/engine';
-import type { DataCatalog, MetricRequest } from '../lib/metrics/types';
+import { queryStat } from '../lib/metrics/engine';
+import { useCatalog } from '../lib/catalogStore';
+import type { StatRequest } from '../lib/metrics/types';
 import { requestTitle } from '../lib/metrics/describe';
 import { fillTemplate, proposeMappings, scanTemplate, type CellMapping, type FillResult, type TemplateScan } from '../lib/excel/template';
 import { downloadBuffer } from '../lib/excel/report';
 import { addMonths, formatPeriod, monthsInRange } from '../lib/dates';
 import { fmtNum } from '../lib/format';
-import { useApp } from '../lib/appState';
 import { usePrefs } from '../lib/prefs';
 import { cue } from '../lib/sound';
 import { supabase } from '../lib/supabase';
@@ -22,8 +22,8 @@ const STATUS_LABEL = { mapped: 'مؤكدة', needs_review: 'تحتاج مراج�
 
 export function FillPage() {
   const demo = usePrefs((p) => p.demoMode);
-  const tick = useApp((s) => s.datasetTick);
-  const [cat, setCat] = useState<DataCatalog | null>(null);
+  const { catalog: cat } = useCatalog();
+  const [dsId, setDsId] = useState<string>('');
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [reading, setReading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -35,13 +35,16 @@ export function FillPage() {
   const [busy, setBusy] = useState(false);
   const [savedNote, setSavedNote] = useState<string | null>(null);
 
-  useEffect(() => { getCatalog().then(setCat).catch(() => setCat(null)); }, [demo, tick]);
+  const datasets = useMemo(() => cat?.datasets.filter((d) => d.row_count > 0) ?? [], [cat]);
+  useEffect(() => { if (!dsId && datasets.length) setDsId(datasets[0].id); }, [datasets, dsId]);
+  const ds = datasets.find((d) => d.id === dsId);
   const months = useMemo(() => {
-    if (!cat?.coverage.length) return [];
-    return monthsInRange(cat.coverage[0].start, cat.coverage[cat.coverage.length - 1].end_exclusive).reverse();
-  }, [cat]);
-  useEffect(() => { if (!periodId && months.length) setPeriodId(months[0]); }, [months, periodId]);
-  const period = periodId ? { start: `${periodId}-01`, end_exclusive: addMonths(`${periodId}-01`, 1), label: formatPeriod(`${periodId}-01`, addMonths(`${periodId}-01`, 1)) } : null;
+    const cov = ds?.period_column ? ds.coverage.filter((c) => c.start && c.end_exclusive) : [];
+    if (!cov.length) return [];
+    return monthsInRange(cov.map((c) => c.start!).sort()[0], cov.map((c) => c.end_exclusive!).sort().at(-1)!).reverse();
+  }, [ds]);
+  useEffect(() => { if (months.length && !months.includes(periodId)) setPeriodId(months[0]); if (!months.length) setPeriodId(''); }, [months, periodId]);
+  const period = periodId ? { start: `${periodId}-01`, end_exclusive: addMonths(`${periodId}-01`, 1) } : null;
 
   const onFile = async (file: File) => {
     setErr(null); setResult(null); setComputed({}); setSavedNote(null);
@@ -52,15 +55,15 @@ export function FillPage() {
       const buf = await file.arrayBuffer();
       const { scan } = await scanTemplate(buf);
       setLoaded({ file, buf, scan });
-      let proposals = period ? proposeMappings(scan.targets, period) : [];
+      let proposals = cat && ds ? proposeMappings(scan.targets, cat, ds.id, period) : [];
       // Reuse a confirmed mapping when the template structure matches exactly.
       if (!demo) {
         const { data } = await supabase().from('saved_items').select('payload').eq('kind', 'template_mapping').eq('structure_hash', scan.structureHash).order('created_at', { ascending: false }).limit(1).maybeSingle();
         const saved = (data?.payload as { maps?: CellMapping[] } | undefined)?.maps;
-        if (saved && period) {
+        if (saved) {
           proposals = proposals.map((p) => {
             const s = saved.find((x) => x.target.sheet === p.target.sheet && x.target.address === p.target.address);
-            return s ? { ...s, target: p.target, request: s.request ? { ...s.request, start: period.start, end_exclusive: period.end_exclusive } : null } : p;
+            return s ? { ...s, target: p.target, request: s.request ? { ...s.request, period: s.request.period ? period : null } : null } : p;
           });
           setSavedNote('طُبق الربط المحفوظ لهذا النموذج لأن بنيته مطابقة. راجعيه قبل التعبئة.');
         }
@@ -73,8 +76,7 @@ export function FillPage() {
 
   // Keep every mapped request on the selected period.
   useEffect(() => {
-    if (!period) return;
-    setMaps((m) => m.map((x) => (x.request ? { ...x, request: { ...x.request, start: period.start, end_exclusive: period.end_exclusive } } : x)));
+    setMaps((m) => m.map((x) => (x.request ? { ...x, request: { ...x.request, period: x.request.period || period ? period : null } } : x)));
     setComputed({}); setResult(null);
   }, [periodId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -93,8 +95,8 @@ export function FillPage() {
     await Promise.all(confirmed.map(async (m) => {
       const key = `${m.target.sheet}!${m.target.address}`;
       try {
-        const r = await queryMetric({ ...m.request!, group_by: [] });
-        out[key] = { value: r.value, coverage: r.coverage.status };
+        const r = await queryStat({ ...m.request!, group_by: [] });
+        out[key] = { value: r.value, coverage: r.coverage?.status ?? 'complete' };
       } catch { out[key] = 'error'; }
     }));
     setComputed(out);
@@ -150,9 +152,17 @@ export function FillPage() {
             {blocked && <div style={{ marginTop: 10 }}><Notice tone="danger">يحتوي النموذج على: {blocked.join('، ')}. طريقة الحفظ الحالية لا تحافظ عليها بدقة، لذلك أُوقفت التعبئة حتى لا يتغير شكل النموذج الرسمي. يمكن استخراج الأرقام في تقرير جديد من صفحة «استخراج».</Notice></div>}
             {loaded.scan.features.images > 0 && !blocked && <div style={{ marginTop: 10 }}><Notice tone="warn">يحتوي النموذج على صور؛ افحصي موضعها في النسخة المعبأة قبل الإرسال.</Notice></div>}
             {savedNote && <div style={{ marginTop: 10 }}><Notice>{savedNote}</Notice></div>}
+            {datasets.length > 1 && (
+              <label className="field" style={{ marginTop: 12 }}><span>قاعدة البيانات</span>
+                <select className="select" value={dsId} onChange={(e) => {
+                  setDsId(e.target.value);
+                  if (cat) setMaps(proposeMappings(loaded.scan.targets, cat, e.target.value, null));
+                  setComputed({}); setResult(null);
+                }}>{datasets.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+            )}
             <label className="field" style={{ marginTop: 12 }}><span>فترة النموذج</span>
-              <select className="select" value={periodId} onChange={(e) => setPeriodId(e.target.value)}>
-                {months.map((m) => <option key={m} value={m}>{formatPeriod(`${m}-01`, addMonths(`${m}-01`, 1))}</option>)}
+              <select className="select" value={periodId} disabled={!months.length} onChange={(e) => setPeriodId(e.target.value)}>
+                {months.length ? months.map((m) => <option key={m} value={m}>{formatPeriod(`${m}-01`, addMonths(`${m}-01`, 1))}</option>) : <option value="">بلا فترة (آخر نسخة معتمدة)</option>}
               </select></label>
           </div>
 
@@ -175,7 +185,7 @@ export function FillPage() {
                       <div className="row row--between">
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: 'var(--fs-sm)' }}><bdi>{m.target.rowLabel}</bdi> × <bdi>{m.target.colLabel}</bdi></div>
-                          <div className="faint" style={{ fontSize: 'var(--fs-xs)' }}><bdi dir="ltr">{key}</bdi> — {m.request ? requestTitle(m.request) : m.note ?? 'غير محددة'}</div>
+                          <div className="faint" style={{ fontSize: 'var(--fs-xs)' }}><bdi dir="ltr">{key}</bdi> — {m.request ? requestTitle(cat?.datasets.find((d) => d.id === m.request!.dataset_id), m.request) : m.note ?? 'غير محددة'}</div>
                         </div>
                         <div className="row">
                           {c && c !== 'error' && <strong>{c.value == null ? 'غير متاح' : <bdi className="num">{fmtNum(c.value)}</bdi>}</strong>}
@@ -188,10 +198,10 @@ export function FillPage() {
                         {m.status !== 'mapped' && m.request && <button type="button" className="btn btn--sm btn--quiet" onClick={() => update(key, { status: 'mapped' })}>تأكيد</button>}
                         {m.status !== 'skipped' && <button type="button" className="btn btn--sm btn--ghost" onClick={() => update(key, { status: 'skipped' })}>ترك الخانة</button>}
                       </div>
-                      {editing === key && period && (
+                      {editing === key && ds && (
                         <div style={{ marginTop: 8, padding: 12, borderRadius: 14, background: 'var(--sunken)' }}>
-                          <RequestEditor catalog={cat} showGroups={false} showPeriod={false}
-                            value={m.request ?? ({ metric: 'visits', start: period.start, end_exclusive: period.end_exclusive, filters: {}, group_by: [] } as MetricRequest)}
+                          <RequestEditor catalog={cat} showGroups={false} showPeriod={false} lockDataset
+                            value={m.request ?? ({ dataset_id: ds.id, measure: { op: 'count' }, filters: [], group_by: [], period } as StatRequest)}
                             onChange={(r) => update(key, { request: { ...r, group_by: [] }, status: 'mapped' })} />
                         </div>
                       )}

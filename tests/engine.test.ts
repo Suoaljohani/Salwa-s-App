@@ -1,66 +1,74 @@
 import { describe, expect, test } from 'vitest';
-import { runLocalQuery, validateRequest, type LocalDataset } from '../src/lib/metrics/localEngine';
-import type { MetricRequest, VisitRow } from '../src/lib/metrics/types';
-import { batchA, batchC, batchD, windows } from './fixtures/edgeCases';
+import { runLocalQuery, validateRequest } from '../src/lib/metrics/localEngine';
+import type { StatRequest } from '../src/lib/metrics/types';
+import { batchA, batchD, staffDs, visitsDs, visitsInfo } from './fixtures/datasets';
 
 const JULY = { start: '2026-07-01', end_exclusive: '2026-08-01' };
-const ds = (rows: VisitRow[], w: { start: string; end_exclusive: string }[]): LocalDataset => ({
-  rows, windows: w.map((x, i) => ({ ...x, id: String(i), file_name: `f${i}` })), datasetVersion: 1, demo: false,
-});
-const q = (d: LocalDataset, r: Partial<MetricRequest>) =>
-  runLocalQuery(d, { metric: 'visits', ...JULY, filters: {}, group_by: [], ...r } as MetricRequest);
+const V = visitsDs([...batchA, ...batchD], [JULY, { start: '2026-08-01', end_exclusive: '2026-08-16' }]);
+const q = (r: Partial<StatRequest>) => runLocalQuery(V, { dataset_id: 'v', measure: { op: 'count' }, filters: [], group_by: [], period: JULY, ...r });
 
-describe('metric definitions (local engine)', () => {
-  const A = ds([...batchA, ...batchD], [windows.A, windows.D]);
-
-  test('visits vs distinct patients', () => {
-    expect(q(A, {}).value).toBe(9);
-    const p = q(A, { metric: 'distinct_patients' });
-    expect(p.value).toBe(6); // P1 counted once; A9 has no MRN
-    expect(p.excluded.unknown_patient).toBe(1);
+describe('generic engine — visits (append dataset)', () => {
+  test('rows vs distinct identifiers', () => {
+    expect(q({}).value).toBe(9);
+    const d = q({ measure: { op: 'count_distinct', column: 'mrn' } });
+    expect(d.value).toBe(6);
+    expect(d.excluded).toEqual([{ column: 'mrn', label: 'رقم الملف الطبي', n: 1, measure: true }]);
   });
-
-  test('18 and over includes exactly 18; unknown age is excluded and reported', () => {
-    const r = q(A, { filters: { encounter_type: ['Emergency'], age_min: 18 } });
-    expect(r.value).toBe(5); // A1 A2 A3 A4(18) A9
-    expect(r.excluded.unknown_age).toBe(1);
-    expect(q(A, { filters: { age_max_exclusive: 18 } }).value).toBe(2); // A5(17), A8(8)
+  test('18 and over includes exactly 18; missing age excluded and reported, never zero', () => {
+    const r = q({ filters: [{ column: 'enc', op: 'eq', value: 'Emergency' }, { column: 'age', op: 'gte', value: 18 }] });
+    expect(r.value).toBe(5);
+    expect(r.excluded).toEqual([{ column: 'age', label: 'العمر', n: 1 }]);
+    expect(q({ filters: [{ column: 'age', op: 'lt', value: 18 }] }).value).toBe(2);
   });
-
-  test('Riyadh month boundaries', () => {
-    expect(q(A, { filters: { encounter_type: ['Outpatient'] } }).value).toBe(2); // includes 23:59 on Jul 31
-    const aug = q(A, { start: '2026-08-01', end_exclusive: '2026-09-01' });
-    expect(aug.value).toBe(2); // includes 00:00 on Aug 1
-    expect(aug.coverage.status).toBe('partial');
-    expect(aug.coverage.covered_days).toBe(15);
+  test('Riyadh day boundaries on datetime columns', () => {
+    expect(q({ filters: [{ column: 'enc', op: 'eq', value: 'Outpatient' }] }).value).toBe(2);
+    const aug = q({ period: { start: '2026-08-01', end_exclusive: '2026-09-01' } });
+    expect(aug.value).toBe(2);
+    expect(aug.coverage?.status).toBe('partial');
+    expect(aug.coverage?.covered_days).toBe(15);
   });
-
-  test('uncovered period is null, not zero; covered empty period is zero', () => {
-    const june = q(A, { start: '2026-06-01', end_exclusive: '2026-07-01' });
+  test('uncovered = null, covered empty = 0', () => {
+    const june = q({ period: { start: '2026-06-01', end_exclusive: '2026-07-01' } });
     expect(june.value).toBeNull();
-    expect(june.coverage.status).toBe('none');
-    expect(q(A, { filters: { gender: 'F', is_saudi: false, encounter_type: ['Emergency'] } }).value).toBe(0);
+    expect(june.coverage?.status).toBe('none');
+    expect(q({ filters: [{ column: 'nat', op: 'neq', value: 'SAUDI ARABIA' }, { column: 'enc', op: 'eq', value: 'Emergency' }] }).value).toBe(0);
   });
-
-  test('grouping and age bands', () => {
-    const r = q(A, { group_by: ['age_band'] });
-    const m = Object.fromEntries(r.rows.map((x) => [x.d1, x.value]));
-    expect(m).toEqual({ '14to17': 1, '18to44': 5, '45to64': 1, lt14: 1, __unknown: 1 });
-    const g = q(A, { metric: 'distinct_patients', group_by: ['month'], start: '2026-07-01', end_exclusive: '2026-09-01' });
-    expect(g.rows).toEqual([{ d1: '2026-07', value: 6 }, { d1: '2026-08', value: 2 }]);
-    expect(g.value).toBe(7); // P1 appears in both months but once overall
+  test('numeric bins and month grain', () => {
+    const r = q({ group_by: [{ column: 'age', bins: [14, 18, 45, 65] }] });
+    expect(Object.fromEntries(r.rows.map((x) => [x.d1, x.value]))).toEqual({ 'lt:14': 1, '14:18': 1, '18:45': 5, '45:65': 1, __unknown: 1 });
+    const m = q({ measure: { op: 'count_distinct', column: 'mrn' }, group_by: [{ column: 'at', grain: 'month' }], period: { start: '2026-07-01', end_exclusive: '2026-09-01' } });
+    expect(m.rows).toEqual([{ d1: '2026-07', value: 6 }, { d1: '2026-08', value: 2 }]);
+    expect(m.value).toBe(7);
   });
-
-  test('corrected version replaces, never adds (simulated rebuild)', () => {
-    // After approving C, the active July set is C only.
-    const C = ds([...batchC, ...batchD], [windows.C, windows.D]);
-    expect(q(C, {}).value).toBe(9); // 9 - A5 + C1
-    expect(q(C, { filters: { gender: 'F' } }).value).toBe(3); // A4, A8, C1 (A7 corrected to M)
+  test('avg / min / max on numbers, ignoring missing values', () => {
+    expect(q({ measure: { op: 'max', column: 'age' } }).value).toBe(50);
+    expect(q({ measure: { op: 'avg', column: 'age', }, filters: [{ column: 'mrn', op: 'eq', value: 'P1' }] }).value).toBe(30);
   });
+  test('validation', () => {
+    expect(() => validateRequest(visitsInfo, { dataset_id: 'v', measure: { op: 'avg', column: 'enc' }, filters: [], group_by: [] })).toThrow(/measure_needs_number/);
+    expect(() => validateRequest(visitsInfo, { dataset_id: 'v', measure: { op: 'count' }, filters: [{ column: 'ctas', op: 'eq', value: 1 }], group_by: [] })).toThrow(/unknown_column/);
+    expect(() => validateRequest(visitsInfo, { dataset_id: 'v', measure: { op: 'count' }, filters: [], group_by: [], period: { start: '2026-08-01', end_exclusive: '2026-07-01' } })).toThrow(/bad_dates/);
+  });
+});
 
-  test('request validation rejects unknown fields', () => {
-    expect(() => validateRequest({ metric: 'visits', ...JULY, filters: { ctas: [1] } as never, group_by: [] })).toThrow(/unsupported_filter/);
-    expect(() => validateRequest({ metric: 'visits', start: '2026-08-01', end_exclusive: '2026-07-01', filters: {}, group_by: [] })).toThrow(/bad_dates/);
-    expect(() => validateRequest({ metric: 'visits', ...JULY, filters: {}, group_by: ['month', 'gender', 'age_band'] })).toThrow(/too_many/);
+describe('generic engine — employees (snapshot dataset)', () => {
+  const s = (r: Partial<StatRequest>) => runLocalQuery(staffDs, { dataset_id: 's', measure: { op: 'count' }, filters: [], group_by: [], ...r });
+  test('count, group, filters', () => {
+    expect(s({}).value).toBe(5);
+    expect(s({ filters: [{ column: 'cat', op: 'eq', value: 'تمريض' }] }).value).toBe(3);
+    expect(s({ group_by: [{ column: 'cat' }, { column: 'gender' }] }).rows).toContainEqual({ d1: 'تمريض', d2: 'Female', value: 2 });
+    expect(s({}).coverage).toBeNull();
+  });
+  test('average years of service skips the missing value and says so', () => {
+    const r = s({ measure: { op: 'avg', column: 'years' } });
+    expect(r.value).toBe(5);
+    expect(r.excluded[0]).toMatchObject({ column: 'years', n: 1, measure: true });
+  });
+  test('date filters and year grain on date columns', () => {
+    expect(s({ filters: [{ column: 'hired', op: 'gte', value: '2021-01-01' }] }).value).toBe(3);
+    expect(s({ group_by: [{ column: 'hired', grain: 'year' }] }).rows.map((r) => r.d1)).toEqual(['2014', '2021', '2023', '2026', '__unknown']);
+  });
+  test('period on a snapshot dataset is rejected', () => {
+    expect(() => s({ period: JULY })).toThrow(/dataset_has_no_period/);
   });
 });

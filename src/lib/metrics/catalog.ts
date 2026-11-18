@@ -1,115 +1,13 @@
-import type { Dimension, MetricId } from './types';
+import type { DatasetColumn, DatasetInfo, GroupBy, MeasureOp } from './types';
 
-/** Bump when a definition below changes meaning. Mirrors app_config.definition_version. */
-export const DEFINITION_VERSION = 1;
-
-export const METRICS: Record<MetricId, { label: string; unit: string; unitPlural: string; definition: string }> = {
-  visits: {
-    label: 'الزيارات',
-    unit: 'زيارة',
-    unitPlural: 'زيارات',
-    definition: 'كل سجل زيارة بمعرّف زيارة فريد يُعد مرة واحدة. تكرار مراجعة الشخص يُعد زيارات متعددة.',
-  },
-  distinct_patients: {
-    label: 'المرضى المختلفون',
-    unit: 'مريض',
-    unitPlural: 'مرضى',
-    definition: 'عدد المرضى المختلفين بحسب رقم الملف الطبي بعد تحويله إلى معرّف مستعار. المريض الذي راجع أكثر من مرة يُعد مرة واحدة في الفترة.',
-  },
+export const MEASURE_LABEL: Record<MeasureOp, string> = {
+  count: 'العدد',
+  count_distinct: 'العدد المميز',
+  sum: 'المجموع',
+  avg: 'المتوسط',
+  min: 'الأدنى',
+  max: 'الأعلى',
 };
-
-export const DIMENSIONS: Record<Dimension, string> = {
-  month: 'الشهر',
-  day: 'اليوم',
-  encounter_type: 'نوع الزيارة',
-  department: 'القسم',
-  payor: 'جهة الدفع',
-  discharge_type: 'نوع الخروج',
-  gender: 'الجنس',
-  nationality_group: 'الجنسية',
-  age_band: 'الفئة العمرية',
-};
-
-export const DIMENSION_ORDER: Dimension[] = [
-  'month', 'encounter_type', 'department', 'gender', 'age_band', 'nationality_group', 'payor', 'discharge_type', 'day',
-];
-
-/** Age bands: non-overlapping, age measured at the visit; 18 belongs to 18to44. */
-export const AGE_BANDS: { id: string; label: string; min: number; maxExclusive: number | null }[] = [
-  { id: 'lt14', label: 'أقل من 14', min: 0, maxExclusive: 14 },
-  { id: '14to17', label: '14 إلى أقل من 18', min: 14, maxExclusive: 18 },
-  { id: '18to44', label: '18 إلى أقل من 45', min: 18, maxExclusive: 45 },
-  { id: '45to64', label: '45 إلى أقل من 65', min: 45, maxExclusive: 65 },
-  { id: '65plus', label: '65 فأكثر', min: 65, maxExclusive: null },
-];
-
-/** Compact axis labels; full wording stays in tables and tooltips. */
-export const AGE_SHORT: Record<string, string> = { lt14: '‎<14', '14to17': '14–17', '18to44': '18–44', '45to64': '45–64', '65plus': '65+', __unknown: 'غير مسجّل' };
-
-export function ageBandOf(age: number | null): string {
-  if (age == null) return '__unknown';
-  for (const b of AGE_BANDS) if (age >= b.min && (b.maxExclusive == null || age < b.maxExclusive)) return b.id;
-  return '__unknown';
-}
-
-const ENCOUNTER_LABELS: Record<string, string> = {
-  Emergency: 'الطوارئ',
-  Outpatient: 'العيادات الخارجية',
-  Inpatient: 'التنويم',
-  'Day Care': 'الرعاية اليومية',
-};
-
-const PAYOR_LABELS: Record<string, string> = {
-  'Saudi Government': 'حكومي',
-  Selfpay: 'دفع ذاتي',
-};
-
-const DISCHARGE_LABELS: Record<string, string> = {
-  Discharged: 'خروج',
-  'Referred to Another Hospital': 'تحويل إلى مستشفى آخر',
-};
-
-/** Arabic label for a category value; raw source text is kept when no translation is known. */
-export function valueLabel(dim: Dimension | string, value: string | undefined | null): string {
-  if (value == null) return '—';
-  if (value === '__unknown') return 'غير مسجّل';
-  if (value === '__none') return 'غير محدد';
-  switch (dim) {
-    case 'gender':
-      return value === 'M' ? 'ذكور' : value === 'F' ? 'إناث' : value;
-    case 'nationality_group':
-      return value === 'saudi' ? 'سعودي' : value === 'non_saudi' ? 'غير سعودي' : value;
-    case 'age_band':
-      return AGE_BANDS.find((b) => b.id === value)?.label ?? value;
-    case 'encounter_type':
-      return ENCOUNTER_LABELS[value] ?? value;
-    case 'payor':
-      return PAYOR_LABELS[value] ?? value;
-    case 'discharge_type':
-      return DISCHARGE_LABELS[value] ?? value;
-    case 'department':
-      return cleanDepartment(value);
-    case 'month':
-      return monthLabel(value);
-    default:
-      return value;
-  }
-}
-
-/** Departments arrive as mixed "English   عربي" strings; prefer the Arabic part when present. */
-export function cleanDepartment(raw: string): string {
-  const s = raw.replace(/\s+/g, ' ').trim();
-  const arabic = s.match(/[؀-ۿ][؀-ۿ\s&]*[؀-ۿ]/g);
-  if (arabic && arabic.join('').length >= 4) return arabic.join(' ').replace(/\s+/g, ' ').trim();
-  const known: Record<string, string> = {
-    'Emergency Medicine': 'طب الطوارئ',
-    'Diabetes Screening Clinic': 'عيادة فحص السكري',
-    'Physical Therapy': 'العلاج الطبيعي',
-    'MEDICAL REHABILITATION': 'التأهيل الطبي',
-    'Occupational Therapy': 'العلاج الوظيفي',
-  };
-  return known[s] ?? s;
-}
 
 export const MONTHS_AR = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
 
@@ -119,25 +17,97 @@ export function monthLabel(period: string): string {
   return `${MONTHS_AR[m - 1]} ${y}`;
 }
 
-/** Source fields that are known not to exist in the current visit report. */
-export const UNAVAILABLE_FIELDS: Record<string, string> = {
-  ctas: 'تصنيف CTAS غير موجود في تقرير الزيارات الحالي',
-  diagnosis: 'التشخيص غير مسجّل في معظم سجلات التقرير الحالي',
-  ward: 'التنويم والأسرّة غير موجودة في التقرير الحالي',
+/** Common category translations; raw source text is shown when nothing is known. */
+const KNOWN: Record<string, string> = {
+  Emergency: 'الطوارئ', Outpatient: 'العيادات الخارجية', Inpatient: 'التنويم', 'Day Care': 'الرعاية اليومية',
+  Male: 'ذكر', Female: 'أنثى', M: 'ذكر', F: 'أنثى',
+  'Saudi Government': 'حكومي', Selfpay: 'دفع ذاتي',
+  Discharged: 'خروج', 'Referred to Another Hospital': 'تحويل إلى مستشفى آخر',
+  'SAUDI ARABIA': 'السعودية', true: 'نعم', false: 'لا',
+  'Emergency Medicine': 'طب الطوارئ', 'Diabetes Screening Clinic': 'عيادة فحص السكري', 'Physical Therapy': 'العلاج الطبيعي',
+  'MEDICAL REHABILITATION': 'التأهيل الطبي', 'Occupational Therapy': 'العلاج الوظيفي',
 };
 
-/** Canonical, deterministic order for category keys (unknown always last). */
-export function sortKeys(dim: string | null | undefined, keys: string[]): string[] {
-  const rank = (k: string): [number, string] => {
-    if (k === '__unknown' || k === '__none') return [9999, k];
-    if (dim === 'age_band') return [AGE_BANDS.findIndex((b) => b.id === k), k];
-    if (dim === 'gender') return [k === 'M' ? 0 : 1, k];
-    if (dim === 'nationality_group') return [k === 'saudi' ? 0 : 1, k];
-    if (dim === 'encounter_type') return [['Emergency', 'Outpatient', 'Inpatient'].indexOf(k) + 1 || 50, k];
-    return [100, k];
+export function colOf(ds: Pick<DatasetInfo, 'columns'> | null | undefined, key: string | undefined): DatasetColumn | undefined {
+  return ds?.columns.find((c) => c.key === key);
+}
+
+function cleanMixed(raw: string): string {
+  const s = raw.replace(/\s+/g, ' ').trim();
+  const arabic = s.match(/[؀-ۿ][؀-ۿ\s&]*[؀-ۿ]/g);
+  if (arabic && arabic.join('').length >= 4 && /[A-Za-z]/.test(s)) return arabic.join(' ').replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+/** Arabic display of a group key for a given column / grouping. */
+export function keyLabel(col: DatasetColumn | undefined, g: GroupBy | undefined, key: string | undefined | null): string {
+  if (key == null) return '—';
+  if (key === '__unknown') return 'غير مسجّل';
+  if (col && (col.type === 'date' || col.type === 'datetime')) {
+    const grain = g?.grain ?? 'month';
+    if (grain === 'month') return monthLabel(key);
+    return key;
+  }
+  if (col?.type === 'number' && g?.bins?.length) {
+    const [a, b] = key.split(':');
+    if (a === 'lt') return `أقل من ${b}`;
+    if (a === 'ge') return `${b} فأكثر`;
+    return `${a} إلى أقل من ${b}`;
+  }
+  if (col?.type === 'boolean') return key === 'true' ? 'نعم' : key === 'false' ? 'لا' : key;
+  return KNOWN[key] ?? cleanMixed(key);
+}
+
+/** Short axis label for numeric bins. */
+export function shortKey(col: DatasetColumn | undefined, g: GroupBy | undefined, key: string): string {
+  if (key === '__unknown') return 'غير مسجّل';
+  if (col?.type === 'number' && g?.bins?.length) {
+    const [a, b] = key.split(':');
+    if (a === 'lt') return `‎<${b}`;
+    if (a === 'ge') return `${b}+`;
+    return `${a}–${Number(b) - 1}`;
+  }
+  return keyLabel(col, g, key);
+}
+
+/** Deterministic order: time and bins ascending, categories by known order then text; unknown last. */
+export function sortKeys(col: DatasetColumn | undefined, g: GroupBy | undefined, keys: string[]): string[] {
+  const rank = (k: string): number => {
+    if (k === '__unknown') return Number.MAX_SAFE_INTEGER;
+    if (col?.type === 'number' && g?.bins?.length) {
+      const [a, b] = k.split(':');
+      return a === 'lt' ? -Infinity : a === 'ge' ? Number(b) + 1e9 : Number(a);
+    }
+    if (col?.type === 'number') return Number(k);
+    return 0;
   };
   return [...keys].sort((a, b) => {
-    const [ra, ka] = rank(a), [rb, kb] = rank(b);
-    return ra - rb || (ka < kb ? -1 : ka > kb ? 1 : 0);
+    const ra = rank(a), rb = rank(b);
+    if (ra !== rb) return ra < rb ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
   });
+}
+
+/** Sensible default bins for a numeric column (age-like columns get clinical bands). */
+export function defaultBins(col: DatasetColumn): number[] | undefined {
+  if (col.type !== 'number') return undefined;
+  if (/عمر|age/i.test(`${col.label} ${col.source_header ?? ''}`)) return [14, 18, 45, 65];
+  const min = Number(col.min), max = Number(col.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return undefined;
+  if (max - min <= 12 && Number.isInteger(min) && Number.isInteger(max)) return undefined;
+  const step = niceStep((max - min) / 5);
+  const out: number[] = [];
+  for (let v = Math.ceil(min / step) * step; v <= max && out.length < 8; v += step) if (v > min) out.push(v);
+  return out.length ? out : undefined;
+}
+
+function niceStep(x: number): number {
+  const p = 10 ** Math.floor(Math.log10(x));
+  const f = x / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+}
+
+/** Fields that the current sources do not contain (answered as unavailable, never guessed). */
+export function hasColumnLike(ds: DatasetInfo[], re: RegExp): boolean {
+  return ds.some((d) => d.columns.some((c) => re.test(`${c.label} ${c.source_header ?? ''}`)));
 }

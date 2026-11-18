@@ -1,14 +1,14 @@
 import { createStore, useStore } from './store';
-import type { MetricRequest } from './metrics/types';
+import type { StatRequest } from './metrics/types';
 
-export interface PinnedIndicator { id: string; title: string; request: MetricRequest }
+export interface PinnedIndicator { id: string; title: string; request: StatRequest }
 
-const PIN_KEY = 'salwa.pins.v1';
+const PIN_KEY = 'salwa.pins.v2';
 function loadPins(): PinnedIndicator[] {
   try { return JSON.parse(localStorage.getItem(PIN_KEY) ?? '[]'); } catch { return []; }
 }
 
-export const appStore = createStore<{ pins: PinnedIndicator[]; exportDraft: MetricRequest | null; datasetTick: number }>({
+export const appStore = createStore<{ pins: PinnedIndicator[]; exportDraft: StatRequest | null; datasetTick: number }>({
   pins: typeof window === 'undefined' ? [] : loadPins(),
   exportDraft: null,
   datasetTick: 0,
@@ -24,6 +24,6 @@ export function unpinIndicator(id: string) {
   appStore.set((s) => ({ ...s, pins: s.pins.filter((x) => x.id !== id) }));
   try { localStorage.setItem(PIN_KEY, JSON.stringify(appStore.get().pins)); } catch { /* ignore */ }
 }
-export function setExportDraft(r: MetricRequest | null) { appStore.set((s) => ({ ...s, exportDraft: r })); }
+export function setExportDraft(r: StatRequest | null) { appStore.set((s) => ({ ...s, exportDraft: r })); }
 /** Bumped after an import is approved or rolled back so every surface refetches. */
 export function bumpDataset() { appStore.set((s) => ({ ...s, datasetTick: s.datasetTick + 1 })); }

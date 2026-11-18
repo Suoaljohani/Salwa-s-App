@@ -1,5 +1,5 @@
 import { Switch } from '@base-ui/react/switch';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Sheet } from './Sheet';
 import { Seg, Pill } from './ui';
 import { setPrefs, usePrefs, type Prefs } from '../lib/prefs';
@@ -7,10 +7,9 @@ import { cue, unlockSound } from '../lib/sound';
 import { supabase } from '../lib/supabase';
 import { getCatalog } from '../lib/metrics/engine';
 import { fmtBytes, fmtNum } from '../lib/format';
-import { formatInstant } from '../lib/dates';
 import { HOSPITAL_NAME, USER_FULL_NAME, USER_TITLE } from '../lib/config';
 import { IconLogout, IconRetry } from './Icons';
-import type { DataCatalog } from '../lib/metrics/types';
+import type { Catalog } from '../lib/metrics/types';
 
 function Toggle({ label, hint, checked, onChange }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -23,7 +22,7 @@ function Toggle({ label, hint, checked, onChange }: { label: string; hint?: stri
   );
 }
 
-type Conn = { state: 'idle' | 'checking' | 'ok' | 'error'; catalog?: DataCatalog; ai?: string; message?: string };
+type Conn = { state: 'idle' | 'checking' | 'ok' | 'error'; catalog?: Catalog; ai?: string; message?: string };
 
 export function SettingsSheet({ open, onOpenChange, signedIn }: { open: boolean; onOpenChange: (o: boolean) => void; signedIn: boolean }) {
   const p = usePrefs((x) => x);
@@ -33,7 +32,7 @@ export function SettingsSheet({ open, onOpenChange, signedIn }: { open: boolean;
   const check = async () => {
     setConn({ state: 'checking' });
     try {
-      const catalog = await getCatalog();
+      const catalog = await getCatalog(true);
       let ai = 'غير مستخدم في الوضع التجريبي';
       if (!p.demoMode) {
         const { data, error } = await supabase().functions.invoke('assistant', { body: { question: '__health' } });
@@ -124,9 +123,7 @@ export function SettingsSheet({ open, onOpenChange, signedIn }: { open: boolean;
           <dl className="kv" style={{ marginTop: 8 }}>
             <dt>قاعدة البيانات</dt><dd>{p.demoMode ? 'تجريبية محلية' : 'متصلة'}</dd>
             <dt>الفهم الذكي</dt><dd>{conn.ai}</dd>
-            <dt>الزيارات المعتمدة</dt><dd><bdi className="num">{fmtNum(conn.catalog.total_visits)}</bdi></dd>
-            <dt>إصدار البيانات</dt><dd><bdi className="num">{fmtNum(conn.catalog.dataset_version)}</bdi></dd>
-            {conn.catalog.last_visit && <><dt>آخر زيارة مسجلة</dt><dd>{formatInstant(conn.catalog.last_visit)}</dd></>}
+            {conn.catalog.datasets.map((d) => <Fragment key={d.id}><dt>{d.name}</dt><dd><bdi className="num">{fmtNum(d.row_count)}</bdi> {d.unit_label}</dd></Fragment>)}
             {conn.catalog.database_bytes != null && <><dt>حجم قاعدة البيانات</dt><dd>{fmtBytes(conn.catalog.database_bytes)} من 500 م.ب المجانية</dd></>}
             {conn.catalog.storage_bytes != null && <><dt>الملفات المحفوظة</dt><dd>{fmtBytes(conn.catalog.storage_bytes)} من 1 ج.ب المجانية</dd></>}
           </dl>

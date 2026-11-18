@@ -1,5 +1,5 @@
 import type ExcelJSType from 'exceljs';
-import type { Cell, Grid } from '../import/visitReport';
+import type { Cell, Grid } from '../import/table';
 
 export async function loadExcel(): Promise<typeof ExcelJSType> {
   const mod = await import('exceljs');
@@ -23,7 +23,8 @@ export function worksheetGrid(ws: ExcelJSType.Worksheet): Grid {
   const grid: Grid = [];
   ws.eachRow({ includeEmpty: true }, (row, rowNumber) => {
     const cells: Cell[] = [];
-    row.eachCell({ includeEmpty: true }, (cell, col) => { cells[col - 1] = cellValue(cell.value); });
+    // Merged ranges: only the top-left (master) cell carries the value, as in Excel itself.
+    row.eachCell({ includeEmpty: true }, (cell, col) => { cells[col - 1] = cell.isMerged && cell.master.address !== cell.address ? null : cellValue(cell.value); });
     grid[rowNumber - 1] = cells;
   });
   for (let i = 0; i < grid.length; i++) if (!grid[i]) grid[i] = [];

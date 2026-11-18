@@ -4,7 +4,7 @@ import type ExcelJSType from 'exceljs';
 import { cellValue, loadExcel } from './readGrid';
 import { listZipParts, scanFeatures, unsupportedFeatures, type FeatureScan } from './zipParts';
 import { parseQuestion } from '../nlu/ruleParser';
-import type { MetricRequest } from '../metrics/types';
+import type { Catalog, StatRequest } from '../metrics/types';
 import { sha256Hex } from '../hash';
 
 export interface TargetCell {
@@ -23,7 +23,7 @@ export type CellStatus = 'mapped' | 'needs_review' | 'unavailable' | 'skipped';
 export interface CellMapping {
   target: TargetCell;
   status: CellStatus;
-  request: MetricRequest | null;
+  request: StatRequest | null;
   note?: string;
 }
 
@@ -107,16 +107,20 @@ export async function scanTemplate(buf: ArrayBuffer): Promise<{ scan: TemplateSc
   return { scan: { sheets, features, unsupported: unsupportedFeatures(features), targets, formulaCells, structureHash }, wb };
 }
 
-/** Propose a request for each cell from its labels and the chosen period, using the local rule parser. */
-export function proposeMappings(targets: TargetCell[], period: { start: string; end_exclusive: string; label: string }): CellMapping[] {
+/**
+ * Propose a request for each cell from its row and column labels (local rule parser over the catalog).
+ * The chosen dataset and period are applied to every proposal; Salwa confirms each one.
+ */
+export function proposeMappings(targets: TargetCell[], catalog: Catalog, datasetId: string, period: { start: string; end_exclusive: string } | null): CellMapping[] {
+  const scoped: Catalog = { ...catalog, datasets: catalog.datasets.filter((d) => d.id === datasetId) };
+  const ds = scoped.datasets[0];
   return targets.map((t) => {
     const phrase = `${t.rowLabel} ${t.colLabel}`;
-    const out = parseQuestion(`${phrase} ${period.label}`);
+    const out = parseQuestion(phrase, scoped);
     if (out.kind === 'unsupported') return { target: t, status: 'unavailable', request: null, note: out.reason };
     if (out.kind === 'clarify' || out.requests.length !== 1) return { target: t, status: 'needs_review', request: null, note: 'لم يُفهم معنى الخانة من عناوينها' };
-    const req = { ...out.requests[0], start: period.start, end_exclusive: period.end_exclusive, group_by: [] };
-    // Every proposal is a suggestion that Salwa confirms; nothing is filled from labels alone.
-    const understood = Object.keys(req.filters).length > 0 || /زيار|مرض|مراجع|عدد|إجمالي|اجمالي|total/i.test(phrase);
+    const req: StatRequest = { ...out.requests[0], group_by: [], period: ds?.period_column ? period : null };
+    const understood = req.filters.length > 0 || req.measure.op !== 'count' || /عدد|إجمالي|اجمالي|total|مجموع/i.test(phrase);
     return { target: t, status: 'needs_review', request: understood ? req : null, note: understood ? undefined : 'العناوين لا تحدد مؤشرًا واضحًا' };
   });
 }

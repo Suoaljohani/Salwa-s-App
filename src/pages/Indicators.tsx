@@ -4,88 +4,77 @@ import type { EChartsCoreOption } from 'echarts/core';
 import { EChart, cssVar } from '../components/EChart';
 import { ResultTable } from '../components/AnswerCard';
 import { IconBookmark, IconLine as IconChart, IconClose, IconTable } from '../components/Icons';
-import { Empty, Notice, Pill, Seg } from '../components/ui';
-import { getCatalog, queryMetric } from '../lib/metrics/engine';
-import { AGE_BANDS, AGE_SHORT, METRICS, sortKeys, valueLabel } from '../lib/metrics/catalog';
-import type { DataCatalog, MetricId, MetricRequest, MetricResult } from '../lib/metrics/types';
-import { coverageText, headline, requestTitle, sourceText } from '../lib/metrics/describe';
-import { timeSeries } from '../lib/metrics/series';
-import { addMonths, daysBetween, formatPeriod, monthsInRange } from '../lib/dates';
-import { countNoun, fmtNum } from '../lib/format';
+import { Empty, Notice, Pill } from '../components/ui';
+import { queryStat } from '../lib/metrics/engine';
+import { colOf, defaultBins, keyLabel, shortKey, sortKeys } from '../lib/metrics/catalog';
+import type { DatasetColumn, DatasetInfo, GroupBy, StatRequest, StatResult } from '../lib/metrics/types';
+import { coverageText, fmtValue, headline, periodText, requestTitle, sourceText } from '../lib/metrics/describe';
+import { addMonths, daysBetween, daysInRange, formatPeriod, monthsInRange } from '../lib/dates';
+import { fmtNum } from '../lib/format';
 import { usePrefs, useReducedMotionPref } from '../lib/prefs';
 import { unpinIndicator, useApp } from '../lib/appState';
-
-type Enc = 'all' | 'Emergency' | 'Outpatient';
-interface Period { id: string; start: string; end_exclusive: string; label: string }
+import { useCatalog } from '../lib/catalogStore';
 
 const EASE = [0.23, 1, 0.32, 1] as const;
 const INTRO_KEY = 'salwa.indicators.introPlayed';
+const PALETTE = ['--s1', '--s2', '--s3', '--s4', '--s5'];
 
-function periodOptions(cat: DataCatalog | null): Period[] {
-  if (!cat?.coverage.length) return [];
-  const start = cat.coverage[0].start;
-  const end = cat.coverage[cat.coverage.length - 1].end_exclusive;
+interface Period { id: string; start: string; end_exclusive: string; label: string }
+
+function periodOptions(ds: DatasetInfo | undefined): Period[] {
+  if (!ds?.period_column) return [];
+  const cov = ds.coverage.filter((c) => c.start && c.end_exclusive);
+  if (!cov.length) return [];
+  const start = cov.map((c) => c.start!).sort()[0];
+  const end = cov.map((c) => c.end_exclusive!).sort().at(-1)!;
   const months = monthsInRange(start, end).reverse();
   const out: Period[] = months.map((m) => ({ id: m, start: `${m}-01`, end_exclusive: addMonths(`${m}-01`, 1), label: formatPeriod(`${m}-01`, addMonths(`${m}-01`, 1)) }));
-  if (months.length > 1) out.push({ id: 'all', start: `${months[months.length - 1]}-01`, end_exclusive: addMonths(`${months[0]}-01`, 1), label: 'كل الفترة المغطاة' });
+  if (months.length > 1) out.push({ id: 'all', start: `${months.at(-1)}-01`, end_exclusive: addMonths(`${months[0]}-01`, 1), label: 'كل الفترة المغطاة' });
   return out;
 }
-
-/** Default: latest month whose coverage is complete; otherwise the latest month. */
-function defaultPeriod(opts: Period[], cat: DataCatalog | null): string | null {
-  if (!opts.length || !cat) return null;
-  const covEnd = cat.coverage[cat.coverage.length - 1].end_exclusive;
-  return (opts.find((o) => o.id !== 'all' && o.end_exclusive <= covEnd) ?? opts[0]).id;
+function defaultPeriod(ds: DatasetInfo, opts: Period[]): string | null {
+  if (!opts.length) return null;
+  const end = ds.coverage.map((c) => c.end_exclusive).filter(Boolean).sort().at(-1)!;
+  return (opts.find((o) => o.id !== 'all' && o.end_exclusive <= end) ?? opts[0]).id;
 }
 
-const ENC_COLOR: Record<string, string> = { Emergency: '--s1', Outpatient: '--s2' };
-const GENDER_COLOR: Record<string, string> = { M: '--s3', F: '--s4', __unknown: '--s5' };
-
-interface Bundle {
-  trend: MetricResult;
-  other: MetricResult;
-  ageGender: MetricResult;
-  dept: MetricResult;
+/** Choose what to chart for any dataset from its column shapes. */
+function plan(ds: DatasetInfo) {
+  const dims = ds.columns.filter((c) => c.role === 'dimension' && (c.values?.length ?? 0) >= 2);
+  const low = dims.filter((c) => (c.distinct ?? c.values!.length) <= 6);
+  const high = dims.filter((c) => (c.distinct ?? c.values!.length) > 6 && (c.distinct ?? 99) <= 300);
+  const nums = ds.columns.filter((c) => c.type === 'number' && c.role === 'measure');
+  const binned = nums.find((c) => defaultBins(c)) ;
+  const ident = ds.columns.find((c) => c.role === 'identifier' && c.key !== ds.key_column) ?? null;
+  const date = ds.columns.find((c) => c.key === ds.period_column) ?? null;
+  return { low, high, nums, binned, ident, date };
 }
 
 export function IndicatorsPage({ active }: { active: boolean }) {
-  const demo = usePrefs((p) => p.demoMode);
   const theme = usePrefs((p) => p.theme);
-  const tick = useApp((s) => s.datasetTick);
   const pins = useApp((s) => s.pins);
   const reduced = useReducedMotionPref();
-  const [cat, setCat] = useState<DataCatalog | null>(null);
-  const [catState, setCatState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const { catalog, state: catState } = useCatalog();
+  const datasets = useMemo(() => catalog?.datasets.filter((d) => d.row_count > 0) ?? [], [catalog]);
+  const [dsId, setDsId] = useState<string | null>(null);
+  const ds = datasets.find((d) => d.id === dsId) ?? datasets[0];
+  const periods = useMemo(() => periodOptions(ds), [ds]);
   const [periodId, setPeriodId] = useState<string | null>(null);
-  const [enc, setEnc] = useState<Enc>('all');
-  const [metric, setMetric] = useState<MetricId>('visits');
-  const [data, setData] = useState<Bundle | null>(null);
+  const [slice, setSlice] = useState<{ column: string; value: string } | null>(null);
+  const [loaded, setLoaded] = useState<{ dsId: string; results: Record<string, StatResult> } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tables, setTables] = useState<Record<string, boolean>>({});
   const reqId = useRef(0);
-  // First visit in this session plays the composed entrance once; later visits do not replay it.
   const [intro] = useState(() => { try { return !sessionStorage.getItem(INTRO_KEY); } catch { return true; } });
   const [introDone, setIntroDone] = useState(false);
   const [themeKey, setThemeKey] = useState(0);
 
-  useEffect(() => {
-    let alive = true;
-    setCatState('loading');
-    getCatalog()
-      .then((c) => { if (!alive) return; setCat(c); setCatState('ready'); })
-      .catch(() => alive && setCatState('error'));
-    return () => { alive = false; };
-  }, [demo, tick]);
-
-  const periods = useMemo(() => periodOptions(cat), [cat]);
-  useEffect(() => {
-    if (!periods.length) return;
-    if (!periodId || !periods.some((p) => p.id === periodId)) setPeriodId(defaultPeriod(periods, cat));
-  }, [periods, periodId, cat]);
+  useEffect(() => { if (ds && (!periodId || !periods.some((p) => p.id === periodId))) setPeriodId(defaultPeriod(ds, periods)); }, [ds, periods, periodId]);
+  useEffect(() => { setSlice(null); }, [ds?.id]);
   const period = periods.find((p) => p.id === periodId) ?? null;
+  const shape = useMemo(() => (ds ? plan(ds) : null), [ds]);
 
-  // Re-read CSS colors when the theme flips (system or manual).
   const themeMounted = useRef(false);
   useEffect(() => {
     let id = 0;
@@ -98,33 +87,37 @@ export function IndicatorsPage({ active }: { active: boolean }) {
   }, [theme]);
 
   useEffect(() => {
-    if (!period) return;
+    if (!ds || !shape || (ds.period_column && periods.length && !period)) return;
     const id = ++reqId.current;
     const ctrl = new AbortController();
-    const filters = enc === 'all' ? {} : { encounter_type: [enc] };
-    const grain = daysBetween(period.start, period.end_exclusive) <= 62 ? 'day' : 'month';
-    const base = { start: period.start, end_exclusive: period.end_exclusive, filters };
-    const reqs: Record<keyof Bundle, MetricRequest> = {
-      trend: { ...base, metric, group_by: [grain, 'encounter_type'] },
-      other: { ...base, metric: metric === 'visits' ? 'distinct_patients' : 'visits', group_by: [] },
-      ageGender: { ...base, metric, group_by: ['age_band', 'gender'] },
-      dept: { ...base, metric, group_by: ['department'] },
-    };
+    const filters = slice ? [{ column: slice.column, op: 'eq' as const, value: slice.value }] : [];
+    const p = period ? { start: period.start, end_exclusive: period.end_exclusive } : null;
+    const base = { dataset_id: ds.id, filters, period: p };
+    const series = shape.low.find((c) => c.key !== slice?.column);
+    const reqs: Record<string, StatRequest> = { total: { ...base, measure: { op: 'count' }, group_by: [] } };
+    if (shape.ident) reqs.distinct = { ...base, measure: { op: 'count_distinct', column: shape.ident.key }, group_by: [] };
+    if (shape.nums[0]) reqs.avg = { ...base, measure: { op: 'avg', column: (shape.binned ?? shape.nums[0]).key }, group_by: [] };
+    if (shape.date && p) {
+      const grain = daysBetween(p.start, p.end_exclusive) <= 62 ? 'day' : 'month';
+      reqs.trend = { ...base, measure: { op: 'count' }, group_by: [{ column: shape.date.key, grain }, ...(series ? [{ column: series.key }] : [])] };
+    } else if (series) {
+      reqs.trend = { ...base, measure: { op: 'count' }, group_by: [{ column: series.key }] };
+    }
+    const second = shape.low.find((c) => c.key !== series?.key && c.key !== slice?.column) ?? series;
+    if (shape.binned) reqs.bins = { ...base, measure: { op: 'count' }, group_by: [{ column: shape.binned.key, bins: defaultBins(shape.binned) }, ...(second && second.key !== slice?.column ? [{ column: second.key }] : [])] };
+    else if (second && second !== series) reqs.bins = { ...base, measure: { op: 'count' }, group_by: [{ column: second.key }] };
+    const big = shape.high.find((c) => c.key !== slice?.column);
+    if (big) reqs.top = { ...base, measure: { op: 'count' }, group_by: [{ column: big.key }] };
     setLoading(true);
     setError(null);
-    Promise.all((Object.keys(reqs) as (keyof Bundle)[]).map((k) => queryMetric(reqs[k], { signal: ctrl.signal }).then((r) => [k, r] as const)))
-      .then((entries) => {
-        if (id !== reqId.current) return; // a newer filter won
-        setData(Object.fromEntries(entries) as unknown as Bundle);
-        setLoading(false);
-      })
-      .catch((e) => {
-        if (id !== reqId.current || ctrl.signal.aborted) return;
-        setError((e as Error).message);
-        setLoading(false);
-      });
+    Promise.all(Object.entries(reqs).map(([k, r]) => queryStat(r, { signal: ctrl.signal }).then((x) => [k, x] as const)))
+      .then((entries) => { if (id === reqId.current) { setLoaded({ dsId: ds.id, results: Object.fromEntries(entries) }); setLoading(false); } })
+      .catch((e) => { if (id === reqId.current && !ctrl.signal.aborted) { setError((e as Error).message); setLoading(false); } });
     return () => ctrl.abort();
-  }, [period?.start, period?.end_exclusive, enc, metric, demo, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ds?.id, ds?.version, period?.start, period?.end_exclusive, slice?.column, slice?.value, shape]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Results are only shown for the dataset they were computed from.
+  const data = loaded && ds && loaded.dsId === ds.id ? loaded.results : null;
 
   useEffect(() => {
     if (data && intro && !introDone && active) {
@@ -132,42 +125,63 @@ export function IndicatorsPage({ active }: { active: boolean }) {
       return () => clearTimeout(t);
     }
   }, [data, intro, introDone, active]);
-
   const playIntro = intro && !introDone && !reduced;
-  const unit = METRICS[metric];
 
-  const kpis = data ? buildKpis(data, metric) : null;
-  // Stable option objects: ECharts only receives a new option when data, theme or motion mode change,
-  // so the first-visit entrance is never cut short by an unrelated re-render.
-  const options = useMemo(() => data && {
-    trend: trendOption(data.trend, playIntro, reduced, themeKey),
-    age: ageOption(data.ageGender, playIntro, reduced, themeKey),
-    dept: deptOption(data.dept, playIntro, reduced, themeKey),
-    trendLegend: legendFor(data.trend, 'encounter_type'),
-    ageLegend: legendFor(data.ageGender, 'gender'),
-  }, [data, playIntro, reduced, themeKey]);
+  const kpis = useMemo(() => {
+    if (!data || !ds) return null;
+    const out: { label: string; value: number | null; text: string; sub: string }[] = [];
+    const t = data.total;
+    out.push({ label: `إجمالي ${ds.unit_label === 'زيارة' ? 'الزيارات' : ds.unit_label === 'موظف' ? 'الموظفين' : 'السجلات'}`, value: t.value, text: fmtValue(t, t.value), sub: t.value == null ? '' : ds.unit_label });
+    if (data.distinct && shape?.ident) out.push({ label: `${shape.ident.label} المختلفة`, value: data.distinct.value, text: fmtValue(data.distinct, data.distinct.value), sub: 'بدون تكرار' });
+    if (data.avg) out.push({ label: `متوسط ${colOf(ds, data.avg.request.measure.column)?.label ?? ''}`, value: data.avg.value, text: fmtValue(data.avg, data.avg.value), sub: data.avg.excluded.length ? `دون ${fmtNum(data.avg.excluded[0].n)} بلا قيمة` : '' });
+    if (out.length < 3 && t.coverage && t.value != null && t.coverage.covered_days) out.push({ label: 'المتوسط اليومي', value: t.value / t.coverage.covered_days, text: fmtNum(Math.round((t.value / t.coverage.covered_days) * 10) / 10), sub: `على ${fmtNum(t.coverage.covered_days)} يومًا مغطى` });
+    return out.slice(0, 3);
+  }, [data, ds, shape]);
+
+  const options = useMemo(() => data && ds && {
+    trend: data.trend ? (data.trend.request.group_by[0].grain ? trendOption(ds, data.trend, playIntro, reduced, themeKey) : barOption(ds, data.trend, playIntro, reduced, themeKey)) : null,
+    bins: data.bins ? barOption(ds, data.bins, playIntro, reduced, themeKey) : null,
+    top: data.top ? hbarOption(ds, data.top, playIntro, reduced, themeKey) : null,
+  }, [data, ds, playIntro, reduced, themeKey]);
 
   if (catState === 'error') return <main className="page"><Notice tone="danger">تعذّر تحميل حالة البيانات. تحققي من الاتصال ثم أعيدي فتح الصفحة.</Notice></main>;
-  if (catState === 'ready' && !periods.length) {
+  if (catState === 'ready' && !datasets.length) {
     return (
       <main className="page">
-        <Head label="لا توجد فترة معتمدة" />
-        <div className="reading card"><Empty title="لا توجد بيانات معتمدة بعد">ارفعي تقرير الزيارات من صفحة البيانات واعتمديه، وستظهر المؤشرات هنا.</Empty></div>
+        <Head label="لا توجد بيانات معتمدة" />
+        <div className="reading card"><Empty title="لا توجد بيانات معتمدة بعد">ارفعي ملفًا من صفحة البيانات واعتمديه، وستظهر المؤشرات هنا.</Empty></div>
       </main>
     );
   }
-
+  const sliceCol = slice ? colOf(ds, slice.column) : undefined;
+  const sliceable = shape ? [...shape.low, ...shape.high].filter((c) => (c.values?.length ?? 0) <= 40) : [];
 
   return (
     <main className="page">
-      <Head label={period?.label ?? '…'} animate={playIntro} />
+      <Head label={period?.label ?? (ds ? (ds.mode === 'snapshot' ? 'آخر نسخة معتمدة' : 'كل الفترة') : '…')} animate={playIntro} />
       <div className="filterbar" role="group" aria-label="المرشحات">
-        <label className="sr-only" htmlFor="period">الفترة</label>
-        <select id="period" className="select" style={{ width: 'auto', minWidth: 150 }} value={periodId ?? ''} onChange={(e) => setPeriodId(e.target.value)}>
-          {periods.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-        </select>
-        <Seg label="نوع الزيارة" value={enc} onChange={setEnc} options={[{ value: 'all', label: 'الكل' }, { value: 'Emergency', label: 'الطوارئ' }, { value: 'Outpatient', label: 'العيادات' }]} />
-        <Seg label="وحدة العد" value={metric} onChange={setMetric} options={[{ value: 'visits', label: 'زيارات' }, { value: 'distinct_patients', label: 'مرضى' }]} />
+        {datasets.length > 1 && (
+          <select className="select" aria-label="قاعدة البيانات" style={{ width: 'auto', minWidth: 160 }} value={ds?.id ?? ''} onChange={(e) => { setDsId(e.target.value); setPeriodId(null); }}>
+            {datasets.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        )}
+        {periods.length > 0 && (
+          <select className="select" aria-label="الفترة" style={{ width: 'auto', minWidth: 140 }} value={periodId ?? ''} onChange={(e) => setPeriodId(e.target.value)}>
+            {periods.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+        )}
+        {sliceable.length > 0 && (
+          <select className="select" aria-label="تصفية" style={{ width: 'auto', minWidth: 140 }} value={slice ? `${slice.column}\u0000${slice.value}` : ''}
+            onChange={(e) => { const [column, value] = e.target.value.split('\u0000'); setSlice(e.target.value ? { column, value } : null); }}>
+            <option value="">بلا تصفية</option>
+            {sliceable.map((c) => (
+              <optgroup key={c.key} label={c.label}>
+                {(c.values ?? []).map((v) => <option key={v.value} value={`${c.key}\u0000${v.value}`}>{keyLabel(c, undefined, v.value)}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        )}
+        {slice && <Pill>{sliceCol?.label}: {keyLabel(sliceCol, undefined, slice.value)}</Pill>}
         {loading && data && <Pill>يُحدَّث…</Pill>}
       </div>
 
@@ -175,18 +189,13 @@ export function IndicatorsPage({ active }: { active: boolean }) {
 
       <section className="kpis" aria-label="الأرقام الأساسية">
         {(kpis ?? [null, null, null]).map((k, i) => (
-          <motion.div
-            key={i}
-            className="kpi reading"
-            initial={playIntro ? { opacity: 0, y: 6 } : false}
-            animate={data ? { opacity: 1, y: 0 } : undefined}
-            transition={{ duration: 0.22, ease: EASE, delay: playIntro ? [0.04, 0.085, 0.12][i] : 0 }}
-          >
+          <motion.div key={i} className="kpi reading"
+            initial={playIntro ? { opacity: 0, y: 6 } : false} animate={data ? { opacity: 1, y: 0 } : undefined}
+            transition={{ duration: 0.22, ease: EASE, delay: playIntro ? [0.04, 0.085, 0.12][i] : 0 }}>
             {k ? (
               <>
                 <span className="kpi__label">{k.label}</span>
                 <span className="kpi__value">
-                  {/* Exact final value is in the DOM immediately; a changed value crossfades, never counts. */}
                   <AnimatePresence mode="popLayout" initial={false}>
                     <motion.span key={k.text} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18, ease: EASE }}>
                       {k.value == null ? <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>غير متاح</span> : <bdi className="num">{k.text}</bdi>}
@@ -202,29 +211,24 @@ export function IndicatorsPage({ active }: { active: boolean }) {
         ))}
       </section>
 
-      {data && (
+      {data && ds && options && (
         <>
-          <ChartPanel
-            id="trend" title={`${unit.label} ${daysBetween(period!.start, period!.end_exclusive) <= 62 ? 'يوميًا' : 'شهريًا'}`} res={data.trend}
-            table={!!tables.trend} onTable={() => setTables((t) => ({ ...t, trend: !t.trend }))}
-            option={options!.trend}
-            legend={options!.trendLegend}
-            fade={playIntro}
-          />
+          {data.trend && options.trend && (
+            <ChartPanel id="trend" ds={ds} res={data.trend} option={options.trend} fade={playIntro}
+              title={data.trend.request.group_by[0].grain ? `${ds.unit_label === 'زيارة' ? 'الزيارات' : 'العدد'} ${data.trend.request.group_by[0].grain === 'day' ? 'يوميًا' : 'شهريًا'}` : `حسب ${colOf(ds, data.trend.request.group_by[0].column)?.label}`}
+              table={!!tables.trend} onTable={() => setTables((t) => ({ ...t, trend: !t.trend }))} />
+          )}
           <div className="grid-2">
-            <ChartPanel
-              id="age" title={`${unit.label} حسب الفئة العمرية والجنس`} res={data.ageGender}
-              table={!!tables.age} onTable={() => setTables((t) => ({ ...t, age: !t.age }))}
-              option={options!.age}
-              legend={options!.ageLegend}
-              fade={playIntro}
-            />
-            <ChartPanel
-              id="dept" title={`${unit.label} حسب القسم`} res={data.dept}
-              table={!!tables.dept} onTable={() => setTables((t) => ({ ...t, dept: !t.dept }))}
-              option={options!.dept}
-              fade={playIntro}
-            />
+            {data.bins && options.bins && (
+              <ChartPanel id="bins" ds={ds} res={data.bins} option={options.bins} fade={playIntro}
+                title={`حسب ${data.bins.request.group_by.map((g) => colOf(ds, g.column)?.label).join(' و')}`}
+                table={!!tables.bins} onTable={() => setTables((t) => ({ ...t, bins: !t.bins }))} />
+            )}
+            {data.top && options.top && (
+              <ChartPanel id="top" ds={ds} res={data.top} option={options.top} fade={playIntro}
+                title={`حسب ${colOf(ds, data.top.request.group_by[0].column)?.label}`}
+                table={!!tables.top} onTable={() => setTables((t) => ({ ...t, top: !t.top }))} />
+            )}
           </div>
         </>
       )}
@@ -236,26 +240,23 @@ export function IndicatorsPage({ active }: { active: boolean }) {
 
 function Head({ label, animate }: { label: string; animate?: boolean }) {
   return (
-    <motion.header
-      className="ind-head"
-      initial={animate ? { opacity: 0, y: 8 } : false}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.16, ease: EASE }}
-    >
-      <div>
-        <div className="period">{label}</div>
-        <h1>المؤشرات</h1>
-      </div>
+    <motion.header className="ind-head" initial={animate ? { opacity: 0, y: 8 } : false} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.16, ease: EASE }}>
+      <div><div className="period">{label}</div><h1>المؤشرات</h1></div>
     </motion.header>
   );
 }
 
-function ChartPanel({ id, title, res, option, legend, table, onTable, fade }: {
-  id: string; title: string; res: MetricResult; option: EChartsCoreOption; legend?: { label: string; color: string }[];
-  table: boolean; onTable: () => void; fade?: boolean;
+function seriesKeys(ds: DatasetInfo, res: StatResult, idx: number) {
+  const g = res.request.group_by[idx];
+  const col = colOf(ds, g?.column);
+  return { g, col, keys: sortKeys(col, g, [...new Set(res.rows.map((r) => (idx === 0 ? r.d1 : r.d2)!))]) };
+}
+
+function ChartPanel({ id, ds, title, res, option, table, onTable, fade }: {
+  id: string; ds: DatasetInfo; title: string; res: StatResult; option: EChartsCoreOption; table: boolean; onTable: () => void; fade?: boolean;
 }) {
   const cov = coverageText(res);
-  const empty = res.value === 0;
+  const legend = res.request.group_by.length === 2 ? (() => { const s = seriesKeys(ds, res, 1); return s.keys.map((k, i) => ({ label: keyLabel(s.col, s.g, k), color: cssVar(PALETTE[i % PALETTE.length]) })); })() : null;
   return (
     <section className="chart-panel reading" aria-labelledby={`h-${id}`}>
       <div className="chart-panel__head">
@@ -264,46 +265,17 @@ function ChartPanel({ id, title, res, option, legend, table, onTable, fade }: {
           {table ? <IconChart aria-hidden /> : <IconTable aria-hidden />}{table ? 'رسم' : 'جدول'}
         </button>
       </div>
-      {legend && legend.length > 1 && !table && (
-        <div className="legend">{legend.map((l) => <span key={l.label}><i style={{ background: l.color }} />{l.label}</span>)}</div>
-      )}
-      {res.value == null ? (
-        <Empty title="الفترة غير مغطاة ببيانات معتمدة" />
-      ) : empty ? (
-        <Empty title="لا توجد سجلات مطابقة">العدد صفر في فترة مغطاة بالبيانات.</Empty>
-      ) : table ? (
-        <div style={{ padding: '0 6px' }}><ResultTable res={res} /></div>
-      ) : (
-        <EChart option={option} label={`${title}: ${headline(res)}. استخدمي زر الجدول لقراءة القيم.`} />
-      )}
+      {legend && legend.length > 1 && !table && <div className="legend">{legend.map((l) => <span key={l.label}><i style={{ background: l.color }} />{l.label}</span>)}</div>}
+      {res.value == null ? <Empty title="الفترة غير مغطاة ببيانات معتمدة" />
+        : res.value === 0 ? <Empty title="لا توجد سجلات مطابقة">العدد صفر في بيانات معتمدة.</Empty>
+        : table ? <div style={{ padding: '0 6px' }}><ResultTable res={res} ds={ds} /></div>
+        : <EChart option={option} label={`${title}: ${headline(res)}. استخدمي زر الجدول لقراءة القيم.`} />}
       <motion.div className="chart-foot" initial={fade ? { opacity: 0 } : false} animate={{ opacity: 1 }} transition={{ duration: 0.16, delay: fade ? 0.1 : 0 }}>
         <span>{sourceText(res)}</span>
         <Pill tone={cov.tone === 'ok' ? 'ok' : cov.tone === 'warn' ? 'warn' : 'none'}>{cov.text}</Pill>
       </motion.div>
     </section>
   );
-}
-
-function buildKpis(d: Bundle, metric: MetricId) {
-  const visits = metric === 'visits' ? d.trend.value : d.other.value;
-  const patients = metric === 'visits' ? d.other.value : d.trend.value;
-  const days = d.trend.coverage.covered_days;
-  const unitV = (n: number) => countNoun(n, 'visit');
-  const unitP = (n: number) => countNoun(n, 'patient');
-  return [
-    { label: metric === 'visits' ? 'إجمالي الزيارات' : 'المرضى المختلفون', value: d.trend.value, text: fmtNum(d.trend.value), sub: d.trend.value == null ? '' : metric === 'visits' ? unitV(d.trend.value) : unitP(d.trend.value) },
-    { label: metric === 'visits' ? 'المرضى المختلفون' : 'إجمالي الزيارات', value: d.other.value, text: fmtNum(d.other.value), sub: d.other.value == null ? '' : metric === 'visits' ? unitP(d.other.value) : unitV(d.other.value) },
-    metric === 'visits'
-      ? { label: 'المتوسط اليومي', value: visits == null || !days ? null : visits / days, text: fmtNum(visits == null || !days ? null : Math.round((visits / days) * 10) / 10), sub: `على ${fmtNum(days)} يومًا مغطى` }
-      : { label: 'زيارات لكل مريض', value: visits == null || !patients ? null : visits / patients, text: fmtNum(visits == null || !patients ? null : Math.round((visits / patients) * 100) / 100), sub: 'الزيارات ÷ المرضى المختلفين' },
-  ];
-}
-
-function legendFor(res: MetricResult, dim: 'encounter_type' | 'gender') {
-  const idx = res.request.group_by.indexOf(dim);
-  const keys = sortKeys(dim, [...new Set(res.rows.map((r) => (idx === 0 ? r.d1 : r.d2)!))]);
-  const colors = dim === 'encounter_type' ? ENC_COLOR : GENDER_COLOR;
-  return keys.map((k, i) => ({ label: valueLabel(dim, k), color: cssVar(colors[k] ?? `--s${Math.min(5, i + 3)}`) }));
 }
 
 function baseOption(first: boolean, reduced: boolean) {
@@ -318,93 +290,93 @@ function baseOption(first: boolean, reduced: boolean) {
     textStyle: { fontFamily: 'Janna LT, system-ui, sans-serif', color: axis },
     grid: { left: 8, right: 12, top: 16, bottom: 4, containLabel: true },
     tooltip: {
-      trigger: 'axis', confine: true, axisPointer: { type: 'line', lineStyle: { color: axis, opacity: 0.4 } },
+      trigger: 'axis', confine: true, axisPointer: { type: 'shadow', shadowStyle: { opacity: 0.06 } },
       backgroundColor: cssVar('--reading'), borderColor: cssVar('--line-strong'), textStyle: { color: cssVar('--text'), fontFamily: 'Janna LT, system-ui' },
       extraCssText: 'direction: rtl; text-align: right; border-radius: 12px; box-shadow: none;',
     },
     aria: { enabled: true },
   };
 }
+const valueAxis = () => ({ type: 'value', min: 0, minInterval: 1, axisLabel: { color: cssVar('--chart-axis'), fontSize: 11 }, splitLine: { lineStyle: { color: cssVar('--chart-grid') } } });
+const catAxis = (data: string[]) => ({ type: 'category', data, axisTick: { show: false }, axisLine: { lineStyle: { color: cssVar('--line-strong') } }, axisLabel: { color: cssVar('--chart-axis'), fontSize: 11, hideOverlap: true } });
 
-function valueAxis() {
-  return {
-    type: 'value', min: 0, minInterval: 1,
-    axisLabel: { color: cssVar('--chart-axis'), fontSize: 11 },
-    splitLine: { lineStyle: { color: cssVar('--chart-grid') } },
-  };
-}
-
-function trendOption(res: MetricResult, first: boolean, reduced: boolean, _k: number): EChartsCoreOption {
-  const grain = res.request.group_by[0] as 'day' | 'month';
-  const { periods, series } = timeSeries(res, grain);
-  const labels = periods.map((p) => (grain === 'day' ? String(Number(p.slice(8))) : valueLabel('month', p)));
+function trendOption(ds: DatasetInfo, res: StatResult, first: boolean, reduced: boolean, _k: number): EChartsCoreOption {
+  const g0 = res.request.group_by[0];
+  const p = res.request.period!;
+  const periods = g0.grain === 'day' ? daysInRange(p.start, p.end_exclusive) : monthsInRange(p.start, p.end_exclusive);
+  const s = res.request.group_by[1] ? seriesKeys(ds, res, 1) : { keys: ['__all'], col: undefined as DatasetColumn | undefined, g: undefined as GroupBy | undefined };
+  const cov = res.coverage;
+  const covered = (per: string) => !cov || (g0.grain === 'month' ? cov.months.find((m) => m.period === per)?.status !== 'none' : !cov.gaps.some((x) => x.start <= per && per < x.end_exclusive));
+  const map = new Map(res.rows.map((r) => [`${r.d2 ?? '__all'}|${r.d1}`, r.value]));
   return {
     ...baseOption(first, reduced),
-    xAxis: { type: 'category', data: labels, boundaryGap: false, axisLine: { lineStyle: { color: cssVar('--line-strong') } }, axisTick: { show: false }, axisLabel: { color: cssVar('--chart-axis'), fontSize: 11, hideOverlap: true } },
+    tooltip: { ...baseOption(first, reduced).tooltip, axisPointer: { type: 'line', lineStyle: { color: cssVar('--chart-axis'), opacity: 0.4 } } },
+    xAxis: { ...catAxis(periods.map((x) => (g0.grain === 'day' ? String(Number(x.slice(8))) : keyLabel(undefined, g0, x)))), boundaryGap: false },
     yAxis: valueAxis(),
-    series: series.map((s) => ({
-      id: `trend-${s.id}`, name: valueLabel('encounter_type', s.id), type: 'line', data: s.data, connectNulls: false,
-      showSymbol: false, symbolSize: 8, lineStyle: { width: 2 }, emphasis: { focus: 'series' },
-      color: cssVar(ENC_COLOR[s.id] ?? '--s3'),
-      areaStyle: series.length === 1 ? { opacity: 0.08 } : undefined,
+    series: s.keys.map((k, i) => ({
+      id: `trend-${k}`, name: k === '__all' ? ds.unit_label : keyLabel(s.col, s.g, k), type: 'line', connectNulls: false,
+      data: periods.map((x) => (covered(x) ? map.get(`${k}|${x}`) ?? 0 : null)),
+      showSymbol: false, symbolSize: 8, lineStyle: { width: 2 }, emphasis: { focus: 'series' }, color: cssVar(PALETTE[i % PALETTE.length]),
+      areaStyle: s.keys.length === 1 ? { opacity: 0.08 } : undefined,
     })),
   };
 }
 
-function ageOption(res: MetricResult, first: boolean, reduced: boolean, _k: number): EChartsCoreOption {
-  const bands = [...AGE_BANDS.map((b) => b.id), '__unknown'].filter((b) => res.rows.some((r) => r.d1 === b));
-  const genders = ['M', 'F', '__unknown'].filter((g) => res.rows.some((r) => r.d2 === g));
+function barOption(ds: DatasetInfo, res: StatResult, first: boolean, reduced: boolean, _k: number): EChartsCoreOption {
+  const x = seriesKeys(ds, res, 0);
+  const s = res.request.group_by[1] ? seriesKeys(ds, res, 1) : null;
+  const get = (a: string, b?: string) => res.rows.find((r) => r.d1 === a && (b === undefined || r.d2 === b))?.value ?? 0;
   return {
     ...baseOption(first, reduced),
-    tooltip: { ...baseOption(first, reduced).tooltip, axisPointer: { type: 'shadow', shadowStyle: { opacity: 0.06 } } },
-    xAxis: { type: 'category', data: bands.map((b) => AGE_SHORT[b] ?? b), axisTick: { show: false }, axisLine: { lineStyle: { color: cssVar('--line-strong') } }, axisLabel: { color: cssVar('--chart-axis'), fontSize: 11, interval: 0 } },
+    xAxis: { ...catAxis(x.keys.map((k) => shortKey(x.col, x.g, k))), axisLabel: { color: cssVar('--chart-axis'), fontSize: 11, interval: 0, hideOverlap: false, width: 70, overflow: 'truncate' } },
     yAxis: valueAxis(),
-    series: genders.map((g) => ({
-      id: `age-${g}`, name: valueLabel('gender', g), type: 'bar', barMaxWidth: 18, barGap: '12%',
-      itemStyle: { borderRadius: [4, 4, 0, 0], color: cssVar(GENDER_COLOR[g]) },
-      data: bands.map((b) => res.rows.find((r) => r.d1 === b && r.d2 === g)?.value ?? 0),
+    series: (s ? s.keys : ['__all']).map((k, i) => ({
+      id: `bar-${k}`, name: k === '__all' ? ds.unit_label : keyLabel(s!.col, s!.g, k), type: 'bar', barMaxWidth: 18, barGap: '12%',
+      itemStyle: { borderRadius: [4, 4, 0, 0], color: cssVar(PALETTE[i % PALETTE.length]) },
+      data: x.keys.map((xk) => (k === '__all' ? get(xk) : get(xk, k))),
     })),
   };
 }
 
-function deptOption(res: MetricResult, first: boolean, reduced: boolean, _k: number): EChartsCoreOption {
+function hbarOption(ds: DatasetInfo, res: StatResult, first: boolean, reduced: boolean, _k: number): EChartsCoreOption {
+  const g = res.request.group_by[0];
+  const col = colOf(ds, g.column);
   const rows = [...res.rows].sort((a, b) => a.value - b.value).slice(-8);
   return {
     ...baseOption(first, reduced),
-    tooltip: { ...baseOption(first, reduced).tooltip, axisPointer: { type: 'shadow', shadowStyle: { opacity: 0.06 } } },
     grid: { left: 8, right: 16, top: 8, bottom: 4, containLabel: true },
     xAxis: valueAxis(),
-    yAxis: { type: 'category', data: rows.map((r) => valueLabel('department', r.d1)), axisTick: { show: false }, axisLine: { show: false }, axisLabel: { color: cssVar('--text-2'), fontSize: 12, width: 120, overflow: 'truncate' } },
-    series: [{ id: 'dept', name: 'العدد', type: 'bar', barMaxWidth: 16, itemStyle: { borderRadius: [0, 4, 4, 0], color: cssVar('--s1') }, data: rows.map((r) => r.value) }],
+    yAxis: { type: 'category', data: rows.map((r) => keyLabel(col, g, r.d1)), axisTick: { show: false }, axisLine: { show: false }, axisLabel: { color: cssVar('--text-2'), fontSize: 12, width: 120, overflow: 'truncate' } },
+    series: [{ id: 'top', name: ds.unit_label, type: 'bar', barMaxWidth: 16, itemStyle: { borderRadius: [0, 4, 4, 0], color: cssVar('--s1') }, data: rows.map((r) => r.value) }],
   };
 }
 
 function Pinned() {
   const pins = useApp((s) => s.pins);
-  const demo = usePrefs((p) => p.demoMode);
-  const tick = useApp((s) => s.datasetTick);
-  const [vals, setVals] = useState<Record<string, MetricResult | 'error'>>({});
+  const { catalog } = useCatalog();
+  const [vals, setVals] = useState<Record<string, StatResult | 'error'>>({});
   useEffect(() => {
     let alive = true;
-    pins.forEach((p) => queryMetric({ ...p.request, group_by: [] })
+    pins.forEach((p) => queryStat({ ...p.request, group_by: [] })
       .then((r) => alive && setVals((v) => ({ ...v, [p.id]: r })))
       .catch(() => alive && setVals((v) => ({ ...v, [p.id]: 'error' }))));
     return () => { alive = false; };
-  }, [pins, demo, tick]);
+  }, [pins, catalog?.version]);
   return (
     <section className="reading card" style={{ marginTop: 12 }} aria-labelledby="pins-h">
       <h2 id="pins-h"><IconBookmark aria-hidden style={{ width: 16, height: 16, verticalAlign: -2, marginInlineEnd: 6 }} />مؤشرات محفوظة من المحادثة</h2>
       <ul className="list">
         {pins.map((p) => {
           const v = vals[p.id];
+          const ds = catalog?.datasets.find((d) => d.id === p.request.dataset_id);
           return (
             <li key={p.id} className="row row--between">
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 'var(--fs-sm)' }}>{requestTitle(p.request)}</div>
-                <div className="faint" style={{ fontSize: 'var(--fs-xs)' }}>{formatPeriod(p.request.start, p.request.end_exclusive)}</div>
+                <div style={{ fontSize: 'var(--fs-sm)' }}>{requestTitle(ds, p.request)}</div>
+                <div className="faint" style={{ fontSize: 'var(--fs-xs)' }}>{v && v !== 'error' ? periodText(v) : ds?.name ?? ''}</div>
               </div>
               <div className="row">
-                <strong>{v === 'error' ? '—' : v ? (v.value == null ? 'غير متاح' : <bdi className="num">{fmtNum(v.value)}</bdi>) : '…'}</strong>
+                <strong>{v === 'error' ? '—' : v ? (v.value == null ? 'غير متاح' : <bdi className="num">{fmtValue(v, v.value)}</bdi>) : '…'}</strong>
                 <button type="button" className="icon-btn" aria-label="إزالة المؤشر" onClick={() => unpinIndicator(p.id)}><IconClose aria-hidden /></button>
               </div>
             </li>
@@ -414,5 +386,3 @@ function Pinned() {
     </section>
   );
 }
-
-
