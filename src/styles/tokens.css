@@ -1,0 +1,110 @@
+/* Salwa design tokens — proposed palette, not an official hospital identity. See DESIGN.md. */
+@font-face {
+  font-family: 'Janna LT';
+  src: url('/fonts/JannaLT-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Janna LT';
+  src: url('/fonts/JannaLT-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --font-scale: 1;
+  --font: 'Janna LT', 'SF Arabic', 'Geeza Pro', 'Noto Sans Arabic', system-ui, sans-serif;
+
+  --fs-xs: calc(13px * var(--font-scale));
+  --fs-sm: calc(15px * var(--font-scale));
+  --fs-md: calc(17px * var(--font-scale));
+  --fs-lg: calc(20px * var(--font-scale));
+  --fs-xl: calc(26px * var(--font-scale));
+  --fs-hero: calc(44px * var(--font-scale));
+
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+  --r-control: 12px;
+  --r-card: 20px;
+  --r-nav: 26px;
+  --r-pill: 999px;
+
+  --ease-out: cubic-bezier(.23, 1, .32, 1);
+  --ease-in-out: cubic-bezier(.77, 0, .175, 1);
+  --d-press: 120ms;
+  --d-pop: 180ms;
+  --d-route: 220ms;
+  --d-sheet: 300ms;
+
+  --nav-h: 68px;
+  --content-max: 1080px;
+  --blur: 18px;
+
+  color-scheme: dark;
+  --base: #0B1E22;
+  --base-glow: rgba(95, 194, 170, .13);
+  --base-glow-2: rgba(201, 164, 106, .06);
+  --reading: #10272C;
+  --reading-2: #143037;
+  --sunken: #0D2226;
+  --glass: rgba(20, 46, 51, .72);
+  --glass-solid: #15333A;
+  --line: rgba(222, 244, 238, .11);
+  --line-strong: rgba(222, 244, 238, .2);
+  --highlight: rgba(240, 255, 250, .09);
+  --text: #EEF5F3;
+  --text-2: #A9C1BC;
+  --text-3: #8AA6A1;
+  --accent: #5FC2AA;
+  --accent-ink: #062A22;
+  --accent-soft: rgba(95, 194, 170, .14);
+  --brass: #C9A46A;
+  --focus: #7FD9C3;
+  --ok: #5FC2AA;
+  --warn: #E0B25E;
+  --warn-soft: rgba(224, 178, 94, .13);
+  --danger: #EE8B8B;
+  --danger-soft: rgba(238, 139, 139, .12);
+  --shadow: 0 18px 40px -18px rgba(0, 8, 10, .55);
+  --shadow-nav: 0 20px 50px -20px rgba(0, 6, 8, .75);
+
+  --s1: #1F9C82; --s2: #C4842A; --s3: #5A86DA; --s4: #CC5C85; --s5: #879E31;
+  --chart-grid: rgba(222, 244, 238, .08);
+  --chart-axis: #8AA6A1;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --base: #E9EFEE;
+  --base-glow: rgba(19, 106, 88, .10);
+  --base-glow-2: rgba(154, 116, 56, .06);
+  --reading: #FFFFFF;
+  --reading-2: #F5F8F7;
+  --sunken: #EEF3F2;
+  --glass: rgba(250, 252, 251, .74);
+  --glass-solid: #F7FAF9;
+  --line: rgba(16, 41, 45, .10);
+  --line-strong: rgba(16, 41, 45, .18);
+  --highlight: rgba(255, 255, 255, .95);
+  --text: #10292D;
+  --text-2: #46615F;
+  --text-3: #536B68;
+  --accent: #136A58;
+  --accent-ink: #FFFFFF;
+  --accent-soft: rgba(19, 106, 88, .09);
+  --brass: #9A7438;
+  --focus: #136A58;
+  --ok: #136A58;
+  --warn: #8A5A06;
+  --warn-soft: rgba(176, 122, 20, .10);
+  --danger: #A32F3A;
+  --danger-soft: rgba(163, 47, 58, .08);
+  --shadow: 0 18px 40px -22px rgba(20, 52, 52, .28);
+  --shadow-nav: 0 20px 44px -22px rgba(20, 52, 52, .35);
+
+  --s1: #0E8C74; --s2: #C27A1E; --s3: #3D6FC4; --s4: #C2466E; --s5: #7A8A1E;
+  --chart-grid: rgba(16, 41, 45, .07);
+  --chart-axis: #536B68;
+}
