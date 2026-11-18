@@ -12,6 +12,7 @@ import { approveBatch, closeBatch, findLiveBatchByHash, listBatches, originalUrl
 import { runLocalQuery } from '../lib/metrics/localEngine';
 import { valueLabel } from '../lib/metrics/catalog';
 import { addDays, formatInstant, formatPeriod } from '../lib/dates';
+import { downloadBuffer } from '../lib/excel/report';
 import { fmtNum } from '../lib/format';
 
 const MAX_BYTES = 30 * 1024 * 1024;
@@ -297,7 +298,7 @@ export function DataPage() {
                   {b.status === 'staged' && <button type="button" className="btn btn--sm btn--primary" disabled={busy} onClick={() => approve(b)}>اعتماد</button>}
                   {b.status === 'staged' && <button type="button" className="btn btn--sm btn--ghost" disabled={busy} onClick={() => close(b, 'rejected')}>رفض</button>}
                   {b.status === 'approved' && <button type="button" className="btn btn--sm btn--quiet" disabled={busy} onClick={() => close(b, 'rolled_back')}><IconUndo aria-hidden />تراجع</button>}
-                  {b.storage_path && <button type="button" className="btn btn--sm btn--quiet" onClick={async () => { const u = await originalUrl(b.storage_path!); if (u) location.assign(u); }}><IconDownload aria-hidden />الأصل</button>}
+                  {b.storage_path && <button type="button" className="btn btn--sm btn--quiet" onClick={async () => { const u = await originalUrl(b.storage_path!); if (!u) return; const buf = await (await fetch(u)).arrayBuffer(); await downloadBuffer(buf, b.file_name); }}><IconDownload aria-hidden />الأصل</button>}
                 </div>
               </li>
             ))}

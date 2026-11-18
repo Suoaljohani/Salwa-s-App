@@ -52,6 +52,7 @@ export function applyPrefsToDocument() {
   if (p.reduceTransparency) d.dataset.transparency = 'reduced'; else delete d.dataset.transparency;
   if (p.reduceMotion) d.dataset.motion = 'reduced'; else delete d.dataset.motion;
   d.style.setProperty('--font-scale', String(p.fontScale));
+  void import('./native').then((n) => n.syncStatusBar(d.dataset.theme as 'light' | 'dark'));
   const meta = document.querySelectorAll('meta[name="theme-color"]');
   meta.forEach((m) => m.setAttribute('content', d.dataset.theme === 'dark' ? '#0B1E22' : '#E9EFEE'));
 }

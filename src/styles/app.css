@@ -321,3 +321,6 @@ table.data tfoot td { font-weight: 700; border-bottom: 0; }
   .topbar__mode .pill svg { width: 16px; height: 16px; }
   .nav__item svg { width: 20px; height: 20px; }
 }
+
+/* Native shell: no long-press callout or text selection on controls (text content stays selectable). */
+button, .nav, .chip, .seg { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }

@@ -8,3 +8,4 @@ public/fonts/*.ttf
 # Never commit patient data exports.
 *.xlsx
 !tests/fixtures/*.xlsx
+*.ipa

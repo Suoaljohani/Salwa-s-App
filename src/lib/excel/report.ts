@@ -171,14 +171,7 @@ export async function buildReportWorkbook(res: MetricResult, title?: string): Pr
   return (await wb.xlsx.writeBuffer()) as ArrayBuffer;
 }
 
-export function downloadBuffer(buf: ArrayBuffer, name: string) {
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+export async function downloadBuffer(buf: ArrayBuffer, name: string) {
+  const { saveFile } = await import('../native');
+  return saveFile(buf, name, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }

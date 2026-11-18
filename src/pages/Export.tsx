@@ -72,9 +72,9 @@ export function ExportPage() {
     try {
       const buf = await buildReportWorkbook(res, title);
       const name = `${(title.trim() || requestTitle(res.request)).replace(/[\\/:*?"<>|]/g, '').slice(0, 80)} - ${res.request.start}.xlsx`;
-      downloadBuffer(buf, name);
       cue('complete');
-      setMsg('جُهز الملف ونُزّل على جهازك. لم يُرسل لأي جهة.');
+      const how = await downloadBuffer(buf, name);
+      setMsg(how === 'cancelled' ? 'جُهز الملف؛ أُغلقت نافذة الحفظ دون اختيار مكان.' : 'جُهز الملف. لم يُرسل لأي جهة إلا بما تختارينه.');
     } catch {
       setMsg('تعذّر إنشاء الملف.');
     } finally { setBuilding(false); }
