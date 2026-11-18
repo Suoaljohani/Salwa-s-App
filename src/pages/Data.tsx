@@ -99,7 +99,8 @@ export function DataPage() {
 
   const preview = useMemo(() => {
     if (!draft?.coverage || !draft.parsed.rows.length) return null;
-    const ds = { rows: draft.parsed.rows, windows: [{ id: 'preview', file_name: draft.file.name, start: draft.coverage.start, end_exclusive: draft.coverage.end_exclusive }], datasetVersion: 0, demo: false };
+    // Preview only, in memory: the raw MRN stands in for the server-side keyed hash.
+    const ds = { rows: draft.parsed.rows.map((r) => ({ ...r, patient_key: r.mrn })), windows: [{ id: 'preview', file_name: draft.file.name, start: draft.coverage.start, end_exclusive: draft.coverage.end_exclusive }], datasetVersion: 0, demo: false };
     try {
       return {
         byEnc: runLocalQuery(ds, { metric: 'visits', start: draft.coverage.start, end_exclusive: draft.coverage.end_exclusive, filters: {}, group_by: ['encounter_type'] }),
@@ -224,7 +225,7 @@ export function DataPage() {
                       <tr key={f.id}>
                         <td>{f.label}{f.required && <span aria-label="مطلوب" style={{ color: 'var(--warn)' }}> *</span>}</td>
                         <td>
-                          <select className="select" aria-label={`عمود ${f.label}`} value={idx ?? ''} onChange={(e) => remap({ [f.id]: e.target.value === '' ? undefined : Number(e.target.value) })}>
+                          <select className="select" dir="ltr" aria-label={`عمود ${f.label}`} value={idx ?? ''} onChange={(e) => remap({ [f.id]: e.target.value === '' ? undefined : Number(e.target.value) })}>
                             <option value="">— غير مربوط —</option>
                             {draft.parsed.columns.filter((c) => !c.personal).map((c) => <option key={c.index} value={c.index}>{c.header.replace(/\s+/g, ' ')}</option>)}
                           </select>

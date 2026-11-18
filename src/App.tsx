@@ -1,4 +1,5 @@
 import { Activity, useCallback, useEffect, useState } from 'react';
+import { MotionConfig } from 'motion/react';
 import { BottomNav, TABS, type Tab } from './components/BottomNav';
 import { SettingsSheet } from './components/SettingsSheet';
 import { IconSettings } from './components/Icons';
@@ -25,17 +26,22 @@ export function App() {
   const demo = usePrefs((p) => p.demoMode);
   const auth = useAuth();
   const [tab, setTab] = useState<Tab>(tabFromHash);
+  // Pages mount on first visit only, so the indicators entrance plays when Salwa actually sees it
+  // (not while pre-rendered hidden) and charts never initialise inside a zero-size container.
+  const [visited, setVisited] = useState<Set<Tab>>(() => new Set([tabFromHash()]));
+  const reduceMotion = usePrefs((p) => p.reduceMotion);
   const [settings, setSettings] = useState(false);
   const online = useOnline();
   const exportDraft = useApp((s) => s.exportDraft);
 
   useEffect(() => {
-    const onHash = () => setTab(tabFromHash());
+    const onHash = () => { const t = tabFromHash(); setTab(t); setVisited((v) => (v.has(t) ? v : new Set(v).add(t))); };
     addEventListener('hashchange', onHash);
     return () => removeEventListener('hashchange', onHash);
   }, []);
   const go = useCallback((t: Tab) => {
     setTab(t);
+    setVisited((v) => (v.has(t) ? v : new Set(v).add(t)));
     history.replaceState(null, '', t === 'assistant' ? location.pathname : `#/${t}`);
     window.scrollTo({ top: 0 });
   }, []);
@@ -49,6 +55,7 @@ export function App() {
   }
 
   return (
+    <MotionConfig reducedMotion={reduceMotion ? 'always' : 'user'}>
     <div className="shell">
       <header className="topbar glass" style={{ borderRadius: 0, borderInline: 0, borderTop: 0 }}>
         <button type="button" className="icon-btn" aria-label="الإعدادات" onClick={() => setSettings(true)}>
@@ -58,13 +65,14 @@ export function App() {
         <div className="topbar__mode">{demo ? <DemoBadge /> : null}</div>
       </header>
       {!online && <div className="page" style={{ paddingBottom: 0 }}><Notice tone="warn">لا يوجد اتصال بالإنترنت. النتائج المعروضة محفوظة من قبل، ولا يمكن حساب أسئلة جديدة الآن.</Notice></div>}
-      <Activity mode={tab === 'fill' ? 'visible' : 'hidden'}><FillPage /></Activity>
-      <Activity mode={tab === 'data' ? 'visible' : 'hidden'}><DataPage /></Activity>
-      <Activity mode={tab === 'assistant' ? 'visible' : 'hidden'}><AssistantPage onOpenIndicators={() => go('indicators')} onExport={() => go('export')} /></Activity>
-      <Activity mode={tab === 'indicators' ? 'visible' : 'hidden'}><IndicatorsPage active={tab === 'indicators'} /></Activity>
-      <Activity mode={tab === 'export' ? 'visible' : 'hidden'}><ExportPage /></Activity>
+      {visited.has('fill') && <Activity mode={tab === 'fill' ? 'visible' : 'hidden'}><FillPage /></Activity>}
+      {visited.has('data') && <Activity mode={tab === 'data' ? 'visible' : 'hidden'}><DataPage /></Activity>}
+      {visited.has('assistant') && <Activity mode={tab === 'assistant' ? 'visible' : 'hidden'}><AssistantPage onOpenIndicators={() => go('indicators')} onExport={() => go('export')} /></Activity>}
+      {visited.has('indicators') && <Activity mode={tab === 'indicators' ? 'visible' : 'hidden'}><IndicatorsPage active={tab === 'indicators'} /></Activity>}
+      {visited.has('export') && <Activity mode={tab === 'export' ? 'visible' : 'hidden'}><ExportPage /></Activity>}
       <BottomNav tab={tab} onChange={go} />
       <SettingsSheet open={settings} onOpenChange={setSettings} signedIn={auth.status === 'ready'} />
     </div>
+    </MotionConfig>
   );
 }

@@ -27,7 +27,7 @@ export function Notice({ tone = 'info', children }: { tone?: 'info' | 'warn' | '
 }
 
 export function DemoBadge() {
-  return <Pill tone="demo">بيانات تجريبية</Pill>;
+  return <span aria-label="بيانات تجريبية" title="بيانات تجريبية"><Pill tone="demo">بيانات تجريبية</Pill></span>;
 }
 
 export function Empty({ icon, title, children }: { icon?: ReactNode; title: string; children?: ReactNode }) {

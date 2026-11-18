@@ -20,7 +20,14 @@ export function EChart({ option, label, height }: { option: EChartsCoreOption; l
     const node = el.current!;
     const inst = echarts.init(node, null, { renderer: 'svg' });
     chart.current = inst;
-    const ro = new ResizeObserver(() => { if (node.clientWidth > 0) inst.resize(); });
+    // Resize only on a real size change: the observer's initial callback would otherwise
+    // finish the entrance animation instantly.
+    let w = node.clientWidth, h = node.clientHeight;
+    const ro = new ResizeObserver(() => {
+      if (node.clientWidth === 0 || (node.clientWidth === w && node.clientHeight === h)) return;
+      w = node.clientWidth; h = node.clientHeight;
+      inst.resize();
+    });
     ro.observe(node);
     return () => { ro.disconnect(); inst.dispose(); chart.current = null; };
   }, []);

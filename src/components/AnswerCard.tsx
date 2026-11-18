@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import type { MetricResult } from '../lib/metrics/types';
-import { DIMENSIONS, METRICS, valueLabel } from '../lib/metrics/catalog';
+import { DIMENSIONS, METRICS, sortKeys, valueLabel } from '../lib/metrics/catalog';
 import { copyText, countParts, coverageText, exclusionNotes, filterPhrases, headline, periodText, requestTitle, sourceText } from '../lib/metrics/describe';
 import { formatInstant } from '../lib/dates';
 import { fmtNum, fmtPct } from '../lib/format';
@@ -21,7 +21,7 @@ export function ResultTable({ res }: { res: MetricResult }) {
         <table className="data">
           <thead><tr><th scope="col">{DIMENSIONS[g[0]]}</th><th scope="col" className="n">{unit}</th>{total != null && <th scope="col" className="n">النسبة</th>}</tr></thead>
           <tbody>
-            {res.rows.map((r) => (
+            {sortKeys(g[0], res.rows.map((r) => r.d1!)).map((k) => res.rows.find((r) => r.d1 === k)!).map((r) => (
               <tr key={r.d1}><td>{valueLabel(g[0], r.d1)}</td><td className="n"><bdi className="num">{fmtNum(r.value)}</bdi></td>{total != null && <td className="n"><bdi className="num">{fmtPct(r.value, total)}</bdi></td>}</tr>
             ))}
           </tbody>
@@ -31,8 +31,8 @@ export function ResultTable({ res }: { res: MetricResult }) {
       </div>
     );
   }
-  const cols = [...new Set(res.rows.map((r) => r.d2!))];
-  const rowsKeys = [...new Set(res.rows.map((r) => r.d1!))];
+  const cols = sortKeys(g[1], [...new Set(res.rows.map((r) => r.d2!))]);
+  const rowsKeys = sortKeys(g[0], [...new Set(res.rows.map((r) => r.d1!))]);
   const get = (a: string, b: string) => res.rows.find((r) => r.d1 === a && r.d2 === b)?.value ?? 0;
   return (
     <div className="table-scroll">

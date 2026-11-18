@@ -78,6 +78,7 @@ export function AssistantPage(_: { onOpenIndicators: () => void; onExport: () =>
     const context = lastContext;
     setTurns((t) => [...t, { id, question, reply: null, context }]);
     setText('');
+    if (inputRef.current) inputRef.current.style.height = 'auto';
     requestAnimationFrame(() => endRef.current?.scrollIntoView({ block: 'end' }));
     let reply: AssistantReply;
     try {
@@ -146,7 +147,7 @@ export function AssistantPage(_: { onOpenIndicators: () => void; onExport: () =>
             {busy ? <IconSpinner aria-hidden className="spin" /> : <IconSend aria-hidden />}
           </button>
         </form>
-        <p className="coverage-line">{coverageLine}</p>
+        {turns.length === 0 && <p className="coverage-line">{coverageLine}</p>}
       </div>
     </main>
   );

@@ -125,3 +125,19 @@ export const UNAVAILABLE_FIELDS: Record<string, string> = {
   diagnosis: 'التشخيص غير مسجّل في معظم سجلات التقرير الحالي',
   ward: 'التنويم والأسرّة غير موجودة في التقرير الحالي',
 };
+
+/** Canonical, deterministic order for category keys (unknown always last). */
+export function sortKeys(dim: string | null | undefined, keys: string[]): string[] {
+  const rank = (k: string): [number, string] => {
+    if (k === '__unknown' || k === '__none') return [9999, k];
+    if (dim === 'age_band') return [AGE_BANDS.findIndex((b) => b.id === k), k];
+    if (dim === 'gender') return [k === 'M' ? 0 : 1, k];
+    if (dim === 'nationality_group') return [k === 'saudi' ? 0 : 1, k];
+    if (dim === 'encounter_type') return [['Emergency', 'Outpatient', 'Inpatient'].indexOf(k) + 1 || 50, k];
+    return [100, k];
+  };
+  return [...keys].sort((a, b) => {
+    const [ra, ka] = rank(a), [rb, kb] = rank(b);
+    return ra - rb || (ka < kb ? -1 : ka > kb ? 1 : 0);
+  });
+}

@@ -2,7 +2,7 @@
 import type ExcelJSType from 'exceljs';
 import { loadExcel } from './readGrid';
 import type { MetricResult } from '../metrics/types';
-import { DIMENSIONS, METRICS, valueLabel } from '../metrics/catalog';
+import { DIMENSIONS, METRICS, sortKeys, valueLabel } from '../metrics/catalog';
 import { coverageText, exclusionNotes, filterPhrases, periodText, requestTitle } from '../metrics/describe';
 import { formatInstant } from '../dates';
 import { HOSPITAL_NAME } from '../config';
@@ -35,11 +35,11 @@ export function toTable(res: MetricResult): ReportTable {
   const g = res.request.group_by;
   if (!g.length) return { rowDim: null, colDim: null, rowKeys: ['__total'], colKeys: ['__value'], cell: () => res.value ?? 0, rowTotals: false };
   if (g.length === 1) {
-    const rows = res.rows.map((r) => r.d1!);
+    const rows = sortKeys(g[0], res.rows.map((r) => r.d1!));
     return { rowDim: g[0], colDim: null, rowKeys: rows, colKeys: ['__value'], cell: (r) => res.rows.find((x) => x.d1 === r)?.value ?? 0, rowTotals: false };
   }
-  const rowKeys = [...new Set(res.rows.map((r) => r.d1!))];
-  const colKeys = [...new Set(res.rows.map((r) => r.d2!))];
+  const rowKeys = sortKeys(g[0], [...new Set(res.rows.map((r) => r.d1!))]);
+  const colKeys = sortKeys(g[1], [...new Set(res.rows.map((r) => r.d2!))]);
   return { rowDim: g[0], colDim: g[1], rowKeys, colKeys, cell: (r, c) => res.rows.find((x) => x.d1 === r && x.d2 === c)?.value ?? 0, rowTotals: true };
 }
 

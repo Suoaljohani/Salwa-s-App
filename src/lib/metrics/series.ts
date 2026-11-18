@@ -2,6 +2,7 @@
 // uncovered periods are null (a visible gap), covered periods with no rows are a measured 0.
 import type { Coverage, MetricResult } from './types';
 import { daysInRange, monthsInRange } from '../dates';
+import { sortKeys } from './catalog';
 
 export function periodsFor(res: MetricResult, grain: 'day' | 'month'): string[] {
   const r = res.request;
@@ -17,8 +18,9 @@ export function periodCovered(cov: Coverage, grain: 'day' | 'month', period: str
 export function timeSeries(res: MetricResult, grain: 'day' | 'month', categories?: string[]) {
   const periods = periodsFor(res, grain);
   const timeIsD1 = res.request.group_by[0] === grain;
+  const catDim = res.request.group_by.find((d) => d !== grain);
   const cats = categories ?? (res.request.group_by.length > 1
-    ? [...new Set(res.rows.map((x) => (timeIsD1 ? x.d2 : x.d1)!))]
+    ? sortKeys(catDim, [...new Set(res.rows.map((x) => (timeIsD1 ? x.d2 : x.d1)!))])
     : ['__all']);
   const map = new Map<string, number>();
   for (const row of res.rows) {

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import type { EChartsCoreOption } from 'echarts/core';
 import { EChart, cssVar } from '../components/EChart';
 import { ResultTable } from '../components/AnswerCard';
 import { IconBookmark, IconLine as IconChart, IconClose, IconTable } from '../components/Icons';
 import { Empty, Notice, Pill, Seg } from '../components/ui';
 import { getCatalog, queryMetric } from '../lib/metrics/engine';
-import { AGE_BANDS, AGE_SHORT, METRICS, valueLabel } from '../lib/metrics/catalog';
+import { AGE_BANDS, AGE_SHORT, METRICS, sortKeys, valueLabel } from '../lib/metrics/catalog';
 import type { DataCatalog, MetricId, MetricRequest, MetricResult } from '../lib/metrics/types';
 import { coverageText, headline, requestTitle, sourceText } from '../lib/metrics/describe';
 import { timeSeries } from '../lib/metrics/series';
@@ -86,10 +86,13 @@ export function IndicatorsPage({ active }: { active: boolean }) {
   const period = periods.find((p) => p.id === periodId) ?? null;
 
   // Re-read CSS colors when the theme flips (system or manual).
+  const themeMounted = useRef(false);
   useEffect(() => {
-    const id = requestAnimationFrame(() => setThemeKey((k) => k + 1));
+    let id = 0;
+    if (themeMounted.current) id = requestAnimationFrame(() => setThemeKey((k) => k + 1));
+    themeMounted.current = true;
     const mq = matchMedia('(prefers-color-scheme: dark)');
-    const on = () => setThemeKey((k) => k + 1);
+    const on = () => requestAnimationFrame(() => setThemeKey((k) => k + 1));
     mq.addEventListener('change', on);
     return () => { cancelAnimationFrame(id); mq.removeEventListener('change', on); };
   }, [theme]);
@@ -133,6 +136,17 @@ export function IndicatorsPage({ active }: { active: boolean }) {
   const playIntro = intro && !introDone && !reduced;
   const unit = METRICS[metric];
 
+  const kpis = data ? buildKpis(data, metric) : null;
+  // Stable option objects: ECharts only receives a new option when data, theme or motion mode change,
+  // so the first-visit entrance is never cut short by an unrelated re-render.
+  const options = useMemo(() => data && {
+    trend: trendOption(data.trend, playIntro, reduced, themeKey),
+    age: ageOption(data.ageGender, playIntro, reduced, themeKey),
+    dept: deptOption(data.dept, playIntro, reduced, themeKey),
+    trendLegend: legendFor(data.trend, 'encounter_type'),
+    ageLegend: legendFor(data.ageGender, 'gender'),
+  }, [data, playIntro, reduced, themeKey]);
+
   if (catState === 'error') return <main className="page"><Notice tone="danger">تعذّر تحميل حالة البيانات. تحققي من الاتصال ثم أعيدي فتح الصفحة.</Notice></main>;
   if (catState === 'ready' && !periods.length) {
     return (
@@ -143,7 +157,6 @@ export function IndicatorsPage({ active }: { active: boolean }) {
     );
   }
 
-  const kpis = data ? buildKpis(data, metric) : null;
 
   return (
     <main className="page">
@@ -172,7 +185,14 @@ export function IndicatorsPage({ active }: { active: boolean }) {
             {k ? (
               <>
                 <span className="kpi__label">{k.label}</span>
-                <span className="kpi__value">{k.value == null ? <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>غير متاح</span> : <bdi className="num">{k.text}</bdi>}</span>
+                <span className="kpi__value">
+                  {/* Exact final value is in the DOM immediately; a changed value crossfades, never counts. */}
+                  <AnimatePresence mode="popLayout" initial={false}>
+                    <motion.span key={k.text} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.18, ease: EASE }}>
+                      {k.value == null ? <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>غير متاح</span> : <bdi className="num">{k.text}</bdi>}
+                    </motion.span>
+                  </AnimatePresence>
+                </span>
                 <span className="kpi__sub">{k.sub}</span>
               </>
             ) : (
@@ -187,22 +207,22 @@ export function IndicatorsPage({ active }: { active: boolean }) {
           <ChartPanel
             id="trend" title={`${unit.label} ${daysBetween(period!.start, period!.end_exclusive) <= 62 ? 'يوميًا' : 'شهريًا'}`} res={data.trend}
             table={!!tables.trend} onTable={() => setTables((t) => ({ ...t, trend: !t.trend }))}
-            option={trendOption(data.trend, playIntro, reduced, themeKey)}
-            legend={legendFor(data.trend, 'encounter_type')}
+            option={options!.trend}
+            legend={options!.trendLegend}
             fade={playIntro}
           />
           <div className="grid-2">
             <ChartPanel
               id="age" title={`${unit.label} حسب الفئة العمرية والجنس`} res={data.ageGender}
               table={!!tables.age} onTable={() => setTables((t) => ({ ...t, age: !t.age }))}
-              option={ageOption(data.ageGender, playIntro, reduced, themeKey)}
-              legend={legendFor(data.ageGender, 'gender')}
+              option={options!.age}
+              legend={options!.ageLegend}
               fade={playIntro}
             />
             <ChartPanel
               id="dept" title={`${unit.label} حسب القسم`} res={data.dept}
               table={!!tables.dept} onTable={() => setTables((t) => ({ ...t, dept: !t.dept }))}
-              option={deptOption(data.dept, playIntro, reduced, themeKey)}
+              option={options!.dept}
               fade={playIntro}
             />
           </div>
@@ -281,7 +301,7 @@ function buildKpis(d: Bundle, metric: MetricId) {
 
 function legendFor(res: MetricResult, dim: 'encounter_type' | 'gender') {
   const idx = res.request.group_by.indexOf(dim);
-  const keys = [...new Set(res.rows.map((r) => (idx === 0 ? r.d1 : r.d2)!))];
+  const keys = sortKeys(dim, [...new Set(res.rows.map((r) => (idx === 0 ? r.d1 : r.d2)!))]);
   const colors = dim === 'encounter_type' ? ENC_COLOR : GENDER_COLOR;
   return keys.map((k, i) => ({ label: valueLabel(dim, k), color: cssVar(colors[k] ?? `--s${Math.min(5, i + 3)}`) }));
 }
@@ -324,7 +344,7 @@ function trendOption(res: MetricResult, first: boolean, reduced: boolean, _k: nu
     yAxis: valueAxis(),
     series: series.map((s) => ({
       id: `trend-${s.id}`, name: valueLabel('encounter_type', s.id), type: 'line', data: s.data, connectNulls: false,
-      showSymbol: false, symbolSize: 8, smooth: 0.2, lineStyle: { width: 2 }, emphasis: { focus: 'series' },
+      showSymbol: false, symbolSize: 8, lineStyle: { width: 2 }, emphasis: { focus: 'series' },
       color: cssVar(ENC_COLOR[s.id] ?? '--s3'),
       areaStyle: series.length === 1 ? { opacity: 0.08 } : undefined,
     })),

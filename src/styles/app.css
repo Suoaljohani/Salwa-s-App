@@ -279,7 +279,7 @@ table.data tfoot td { font-weight: 700; border-bottom: 0; }
 .setting small { display: block; color: var(--text-3); font-size: var(--fs-xs); }
 .switch { position: relative; width: 50px; height: 30px; border-radius: 30px; border: 0; background: var(--line-strong); flex: none; transition: background-color var(--d-pop) var(--ease-out); padding: 0; }
 .switch[data-checked] { background: var(--accent); }
-.switch__thumb { position: absolute; top: 3px; inset-inline-start: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform var(--d-pop) var(--ease-out); }
+.switch__thumb { position: absolute; top: 3px; right: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform var(--d-pop) var(--ease-out); }
 .switch[data-checked] .switch__thumb { transform: translateX(-20px); }
 .slider { width: 100%; }
 .slider input[type='range'] { width: 100%; accent-color: var(--accent); min-height: 32px; }
@@ -305,3 +305,19 @@ table.data tfoot td { font-weight: 700; border-bottom: 0; }
 }
 .spin { animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Narrow phones & large text ──────────── */
+.topbar__title { font-size: min(var(--fs-sm), 16px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.topbar__title strong { font-size: min(var(--fs-sm), 16px); overflow: hidden; text-overflow: ellipsis; }
+.nav__item { font-size: min(var(--fs-xs), 13.5px); }
+.composer textarea { min-width: 0; width: 100%; }
+@media (max-width: 400px) {
+  .topbar__title { font-size: 0; }
+  .topbar__title strong { font-size: min(var(--fs-sm), 15px); }
+  .topbar__mode .pill { padding-inline: 8px; }
+}
+@media (max-width: 350px) {
+  .topbar__mode .pill span, .topbar__mode .pill { font-size: 0; gap: 0; }
+  .topbar__mode .pill svg { width: 16px; height: 16px; }
+  .nav__item svg { width: 20px; height: 20px; }
+}
