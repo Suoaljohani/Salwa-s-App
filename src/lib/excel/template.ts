@@ -112,11 +112,12 @@ export async function scanTemplate(buf: ArrayBuffer): Promise<{ scan: TemplateSc
  * The chosen dataset and period are applied to every proposal; Salwa confirms each one.
  */
 export function proposeMappings(targets: TargetCell[], catalog: Catalog, datasetId: string, period: { start: string; end_exclusive: string } | null): CellMapping[] {
-  const scoped: Catalog = { ...catalog, datasets: catalog.datasets.filter((d) => d.id === datasetId) };
-  const ds = scoped.datasets[0];
+  // 'auto': every cell picks its own dataset from its labels (and the sheet title, if any).
+  const scoped: Catalog = datasetId === 'auto' ? catalog : { ...catalog, datasets: catalog.datasets.filter((d) => d.id === datasetId) };
   return targets.map((t) => {
     const phrase = `${t.rowLabel} ${t.colLabel}`;
     const out = parseQuestion(phrase, scoped);
+    const ds = out.kind === 'requests' ? scoped.datasets.find((d) => d.id === out.requests[0].dataset_id) : undefined;
     if (out.kind === 'unsupported') return { target: t, status: 'unavailable', request: null, note: out.reason };
     if (out.kind === 'clarify' || out.requests.length !== 1) return { target: t, status: 'needs_review', request: null, note: 'لم يُفهم معنى الخانة من عناوينها' };
     const req: StatRequest = { ...out.requests[0], group_by: [], period: ds?.period_column ? period : null };

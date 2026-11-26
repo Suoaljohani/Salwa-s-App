@@ -36,13 +36,14 @@ export function FillPage() {
   const [savedNote, setSavedNote] = useState<string | null>(null);
 
   const datasets = useMemo(() => cat?.datasets.filter((d) => d.row_count > 0) ?? [], [cat]);
-  useEffect(() => { if (!dsId && datasets.length) setDsId(datasets[0].id); }, [datasets, dsId]);
+  useEffect(() => { if (!dsId && datasets.length) setDsId(datasets.length > 1 ? 'auto' : datasets[0].id); }, [datasets, dsId]);
   const ds = datasets.find((d) => d.id === dsId);
+  const anyPeriod = dsId === 'auto' ? datasets.find((d) => d.period_column) : ds;
   const months = useMemo(() => {
-    const cov = ds?.period_column ? ds.coverage.filter((c) => c.start && c.end_exclusive) : [];
+    const cov = anyPeriod?.period_column ? anyPeriod.coverage.filter((c) => c.start && c.end_exclusive) : [];
     if (!cov.length) return [];
     return monthsInRange(cov.map((c) => c.start!).sort()[0], cov.map((c) => c.end_exclusive!).sort().at(-1)!).reverse();
-  }, [ds]);
+  }, [anyPeriod]);
   useEffect(() => { if (months.length && !months.includes(periodId)) setPeriodId(months[0]); if (!months.length) setPeriodId(''); }, [months, periodId]);
   const period = periodId ? { start: `${periodId}-01`, end_exclusive: addMonths(`${periodId}-01`, 1) } : null;
 
@@ -55,7 +56,7 @@ export function FillPage() {
       const buf = await file.arrayBuffer();
       const { scan } = await scanTemplate(buf);
       setLoaded({ file, buf, scan });
-      let proposals = cat && ds ? proposeMappings(scan.targets, cat, ds.id, period) : [];
+      let proposals = cat && dsId ? proposeMappings(scan.targets, cat, dsId, period) : [];
       // Reuse a confirmed mapping when the template structure matches exactly.
       if (!demo) {
         const { data } = await supabase().from('saved_items').select('payload').eq('kind', 'template_mapping').eq('structure_hash', scan.structureHash).order('created_at', { ascending: false }).limit(1).maybeSingle();
@@ -156,9 +157,9 @@ export function FillPage() {
               <label className="field" style={{ marginTop: 12 }}><span>قاعدة البيانات</span>
                 <select className="select" value={dsId} onChange={(e) => {
                   setDsId(e.target.value);
-                  if (cat) setMaps(proposeMappings(loaded.scan.targets, cat, e.target.value, null));
+                  if (cat) setMaps(proposeMappings(loaded.scan.targets, cat, e.target.value, period));
                   setComputed({}); setResult(null);
-                }}>{datasets.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+                }}><option value="auto">تلقائي: كل خانة من البيانات المناسبة لها</option>{datasets.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
             )}
             <label className="field" style={{ marginTop: 12 }}><span>فترة النموذج</span>
               <select className="select" value={periodId} disabled={!months.length} onChange={(e) => setPeriodId(e.target.value)}>
@@ -198,10 +199,10 @@ export function FillPage() {
                         {m.status !== 'mapped' && m.request && <button type="button" className="btn btn--sm btn--quiet" onClick={() => update(key, { status: 'mapped' })}>تأكيد</button>}
                         {m.status !== 'skipped' && <button type="button" className="btn btn--sm btn--ghost" onClick={() => update(key, { status: 'skipped' })}>ترك الخانة</button>}
                       </div>
-                      {editing === key && ds && (
+                      {editing === key && (ds ?? datasets[0]) && (
                         <div style={{ marginTop: 8, padding: 12, borderRadius: 14, background: 'var(--sunken)' }}>
-                          <RequestEditor catalog={cat} showGroups={false} showPeriod={false} lockDataset
-                            value={m.request ?? ({ dataset_id: ds.id, measure: { op: 'count' }, filters: [], group_by: [], period } as StatRequest)}
+                          <RequestEditor catalog={cat} showGroups={false} showPeriod
+                            value={m.request ?? ({ dataset_id: (ds ?? datasets[0]).id, measure: { op: 'count' }, filters: [], group_by: [], period: (ds ?? datasets[0]).period_column ? period : null } as StatRequest)}
                             onChange={(r) => update(key, { request: { ...r, group_by: [] }, status: 'mapped' })} />
                         </div>
                       )}

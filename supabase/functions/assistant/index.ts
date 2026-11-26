@@ -6,7 +6,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2.119.0';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MODEL = Deno.env.get('GROQ_MODEL') ?? 'openai/gpt-oss-120b';
-const PROMPT_VERSION = 5;
+const PROMPT_VERSION = 6;
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -16,7 +16,7 @@ const cors = {
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 interface Col { key: string; label: string; type: string; role: string; values?: { value: string; n: number }[]; distinct?: number; min?: unknown; max?: unknown }
-interface Ds { id: string; name: string; unit_label: string; mode: string; period_column: string | null; key_column: string | null; version: number; columns: Col[]; row_count: number; coverage: { start: string | null; end_exclusive: string | null; as_of: string | null }[] }
+interface Ds { id: string; name: string; description?: string | null; unit_label: string; mode: string; period_column: string | null; key_column: string | null; version: number; columns: Col[]; row_count: number; coverage: { start: string | null; end_exclusive: string | null; as_of: string | null }[] }
 interface Catalog { datasets: Ds[]; version: number }
 
 const FILTER_OPS = ['eq', 'neq', 'in', 'not_in', 'gt', 'gte', 'lt', 'lte', 'contains', 'is_null', 'not_null'];
@@ -82,41 +82,64 @@ const tools = [
 
 const TYPE_AR: Record<string, string> = { text: 'نص', number: 'رقم', date: 'تاريخ', datetime: 'تاريخ ووقت', boolean: 'نعم/لا' };
 
-function describeCatalog(cat: Catalog): string {
-  return cat.datasets.filter((d) => d.row_count > 0).map((d) => {
-    const cov = d.mode === 'append'
-      ? `تراكمي، عمود الفترة ${d.period_column ?? '—'}، مغطى: ${d.coverage.map((c) => `${c.start}..${c.end_exclusive}`).join(', ') || '—'}`
-      : `لقطة (آخر نسخة${d.coverage.at(-1)?.as_of ? ` بتاريخ ${d.coverage.at(-1)!.as_of}` : ''})`;
-    const cols = d.columns.filter((c) => c.role !== 'ignore').map((c) => {
-      let extra = '';
-      if (c.role === 'identifier') extra = 'معرّف (للعد المميز فقط)';
-      else if (c.type === 'text' && c.values && (c.distinct ?? c.values.length) <= 40) extra = c.values.slice(0, 25).map((v) => v.value).join(' | ');
-      else if (c.type === 'text') extra = `${c.distinct ?? '?'} قيمة مختلفة`;
-      else if (c.min != null) extra = `${c.min}..${c.max}`;
-      return `  - ${c.key} (${c.label}، ${TYPE_AR[c.type] ?? c.type}): ${extra}`;
-    }).join('\n');
-    return `[${d.id}] ${d.name} — الوحدة: ${d.unit_label} — ${cov} — ${d.row_count} سجل\n${cols}`;
-  }).join('\n\n');
+const normAr = (t: string) => t.toLowerCase().replace(/[\u064B-\u0652\u0640]/g, '').replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه');
+
+/** Rank datasets by overlap with the question so only the relevant ones are described in detail. */
+function rankDatasets(cat: Catalog, question: string, contextId: string | null): Ds[] {
+  const q = normAr(question);
+  const words = q.split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3).map((w) => w.replace(/^(ال|وال|بال|لل)/, ''));
+  const hit = (text: string) => { const t = normAr(text); return words.filter((w) => w.length >= 3 && t.includes(w)).length; };
+  const scored = cat.datasets.filter((d) => d.row_count > 0).map((d) => {
+    let s = hit(`${d.name} ${d.unit_label}`) * 4 + hit(d.description ?? '') * 2;
+    for (const c of d.columns) {
+      if (c.role === 'ignore') continue;
+      s += hit(c.label);
+      for (const v of (c.values ?? []).slice(0, 25)) if (v.value.length >= 3 && q.includes(normAr(v.value))) s += 2;
+    }
+    if (/ctas|فرز/.test(q) && /ctas/i.test(d.name)) s += 6;
+    if (d.id === contextId) s += 3;
+    return { d, s: s + Math.min(2, Math.log10(Math.max(1, d.row_count)) / 3) };
+  }).sort((a, b) => b.s - a.s);
+  return scored.map((x) => x.d);
 }
 
-function systemPrompt(cat: Catalog, today: string): string {
+function describeDataset(d: Ds): string {
+  const cov = d.mode === 'append' && d.period_column
+    ? `عمود الفترة ${d.period_column}، مغطى: ${d.coverage.map((c) => `${c.start}..${c.end_exclusive}`).join(', ') || '—'}`
+    : `بلا عمود فترة (أرقام مجمعة أو قائمة)${d.coverage.at(-1)?.as_of ? `، حتى ${d.coverage.at(-1)!.as_of}` : ''}`;
+  const cols = d.columns.filter((c) => c.role !== 'ignore').slice(0, 24).map((c) => {
+    let extra = '';
+    if (c.role === 'identifier') extra = 'معرّف (للعد المميز فقط)';
+    else if (c.type === 'text' && c.values && (c.distinct ?? c.values.length) <= 40) extra = c.values.slice(0, 20).map((v) => v.value.slice(0, 40)).join(' | ');
+    else if (c.type === 'text') extra = `${c.distinct ?? '?'} قيمة مختلفة، أكثرها: ${(c.values ?? []).slice(0, 5).map((v) => v.value.slice(0, 40)).join(' | ')}`;
+    else if (c.min != null) extra = `${c.min}..${c.max}`;
+    return `  - ${c.key} (${c.label}، ${TYPE_AR[c.type] ?? c.type}): ${extra}`;
+  }).join('\n');
+  return `[${d.id}] ${d.name} — الوحدة: ${d.unit_label} — ${d.description ?? ''} — ${cov} — ${d.row_count} سجل\n${cols}`;
+}
+
+function systemPrompt(cat: Catalog, today: string, question: string, contextId: string | null): string {
+  const ranked = rankDatasets(cat, question, contextId);
+  const detailed = ranked.slice(0, 4);
+  const others = ranked.slice(4);
   return [
     'أنت محلل يحوّل أسئلة رئيسة قسم الإحصاء الطبي إلى طلب إحصائي منظم عبر الأدوات فقط. لا تكتب أرقامًا ولا نتائج.',
     `اليوم بتوقيت الرياض: ${today}.`,
     'قواعد:',
-    '- اختر قاعدة البيانات المناسبة من الفهرس. إن احتمل السؤال أكثر من قاعدة وتغير الجواب فاسأل بـ clarify.',
-    '- العد: measure.op=count. «مختلفين/بدون تكرار» = count_distinct على عمود المعرّف المناسب (مثل رقم الملف للمرضى، الرقم الوظيفي للموظفين).',
-    '- متوسط/مجموع/أعلى/أدنى على أعمدة الأرقام فقط.',
+    '- اختر قاعدة البيانات المناسبة من الفهرس المفصل. إن احتمل السؤال أكثر من قاعدة وتغير الجواب فاسأل بـ clarify.',
+    '- إن كانت القاعدة المناسبة في «قواعد أخرى» فقط فاستخدم clarify واقترح اسمها لتعيد المستخدمة صياغة السؤال باسمها.',
+    '- العد: measure.op=count. «مختلفين/بدون تكرار» = count_distinct على عمود المعرّف المناسب (رقم الملف للمرضى).',
+    '- متوسط/مجموع/أعلى/أدنى على أعمدة الأرقام فقط. في القواعد المجمعة (بلا فترة) الأرقام جاهزة: استخدم sum على عمود العدد المناسب لا count.',
     '- المرشحات بالقيم كما تظهر في الفهرس حرفيًا. «18 فأكثر» = gte 18، «أكبر من 18» = gt 18، «أقل من 18» = lt 18.',
-    '- «حسب X» = group_by. أعمدة التاريخ تحتاج grain (month افتراضيًا، day لليومي). أعمدة الأرقام مثل العمر تحتاج bins (العمر: [14,18,45,65]).',
-    '- period فقط لقواعد البيانات التراكمية ذات عمود فترة. «الشهر الماضي» = الشهر التقويمي السابق. end_exclusive = اليوم التالي لآخر يوم.',
-    '- الشهر بلا سنة: أحدث سنة لا تتجاوز اليوم، واذكر ذلك في assumptions. لا ترفض لأن الفترة غير مغطاة؛ النظام يوضح ذلك.',
-    '- المقارنة بين فترتين: requests بعنصرين بالمرشحات نفسها.',
-    '- المتابعة مثل «والنساء فقط؟» تعدّل الطلب السابق المرفق.',
-    '- إن لم يوجد عمود يجيب عن السؤال (مثل CTAS) فاستخدم unsupported واذكر قاعدة البيانات.',
+    '- «حسب X» = group_by. أعمدة التاريخ تحتاج grain (month افتراضيًا). أعمدة الأرقام مثل العمر تحتاج bins (العمر: [14,18,45,65]).',
+    '- period فقط للقواعد ذات عمود فترة. «الشهر الماضي» = الشهر التقويمي السابق. end_exclusive = اليوم التالي لآخر يوم.',
+    '- الشهر بلا سنة: أحدث سنة لا تتجاوز اليوم، واذكر ذلك في assumptions. لا ترفض لأن الفترة غير مغطاة.',
+    '- المقارنة بين فترتين: requests بعنصرين. المتابعة مثل «والنساء فقط؟» تعدّل الطلب السابق المرفق.',
+    '- إن لم يوجد عمود يجيب عن السؤال فاستخدم unsupported.',
     '- خاطب المستخدمة بصيغة المؤنث وباختصار.',
-    'الفهرس:',
-    describeCatalog(cat),
+    'الفهرس المفصل:',
+    detailed.map(describeDataset).join('\n\n'),
+    others.length ? `قواعد أخرى: ${others.map((d) => `${d.name} (${d.unit_label})`).join('، ')}` : '',
   ].join('\n');
 }
 
@@ -191,7 +214,8 @@ Deno.serve(async (req) => {
   if (!decision) {
     const apiKey = Deno.env.get('GROQ_API_KEY');
     if (!apiKey) return json({ kind: 'ai_unavailable', reason: 'missing_key' });
-    const messages: { role: string; content: string }[] = [{ role: 'system', content: systemPrompt(catalog, today) }];
+    const contextId = (body.context as { dataset_id?: string } | null)?.dataset_id ?? null;
+    const messages: { role: string; content: string }[] = [{ role: 'system', content: systemPrompt(catalog, today, question, contextId) }];
     if (body.context) messages.push({ role: 'user', content: `الطلب السابق (JSON): ${JSON.stringify(body.context).slice(0, 1500)}` });
     messages.push({ role: 'user', content: question });
     const ctrl = new AbortController();
