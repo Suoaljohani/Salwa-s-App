@@ -6,7 +6,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2.119.0';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MODEL = Deno.env.get('GROQ_MODEL') ?? 'openai/gpt-oss-120b';
-const PROMPT_VERSION = 6;
+const PROMPT_VERSION = 7;
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -107,11 +107,11 @@ function describeDataset(d: Ds): string {
   const cov = d.mode === 'append' && d.period_column
     ? `عمود الفترة ${d.period_column}، مغطى: ${d.coverage.map((c) => `${c.start}..${c.end_exclusive}`).join(', ') || '—'}`
     : `بلا عمود فترة (أرقام مجمعة أو قائمة)${d.coverage.at(-1)?.as_of ? `، حتى ${d.coverage.at(-1)!.as_of}` : ''}`;
-  const cols = d.columns.filter((c) => c.role !== 'ignore').slice(0, 24).map((c) => {
+  const cols = d.columns.filter((c) => c.role !== 'ignore').slice(0, 18).map((c) => {
     let extra = '';
     if (c.role === 'identifier') extra = 'معرّف (للعد المميز فقط)';
-    else if (c.type === 'text' && c.values && (c.distinct ?? c.values.length) <= 40) extra = c.values.slice(0, 20).map((v) => v.value.slice(0, 40)).join(' | ');
-    else if (c.type === 'text') extra = `${c.distinct ?? '?'} قيمة مختلفة، أكثرها: ${(c.values ?? []).slice(0, 5).map((v) => v.value.slice(0, 40)).join(' | ')}`;
+    else if (c.type === 'text' && c.values && (c.distinct ?? c.values.length) <= 40) extra = c.values.slice(0, 12).map((v) => v.value.slice(0, 30)).join(' | ');
+    else if (c.type === 'text') extra = `${c.distinct ?? '?'} قيمة مختلفة، أكثرها: ${(c.values ?? []).slice(0, 4).map((v) => v.value.slice(0, 30)).join(' | ')}`;
     else if (c.min != null) extra = `${c.min}..${c.max}`;
     return `  - ${c.key} (${c.label}، ${TYPE_AR[c.type] ?? c.type}): ${extra}`;
   }).join('\n');
@@ -120,8 +120,8 @@ function describeDataset(d: Ds): string {
 
 function systemPrompt(cat: Catalog, today: string, question: string, contextId: string | null): string {
   const ranked = rankDatasets(cat, question, contextId);
-  const detailed = ranked.slice(0, 4);
-  const others = ranked.slice(4);
+  const detailed = ranked.slice(0, 3);
+  const others = ranked.slice(3);
   return [
     'أنت محلل يحوّل أسئلة رئيسة قسم الإحصاء الطبي إلى طلب إحصائي منظم عبر الأدوات فقط. لا تكتب أرقامًا ولا نتائج.',
     `اليوم بتوقيت الرياض: ${today}.`,
