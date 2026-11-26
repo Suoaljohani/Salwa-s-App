@@ -52,7 +52,7 @@ function findPeriods(q: string, today: string): Period[] {
     }
   }
   if (found.length) return found.sort((a, b) => a.idx - b.idx).map((x) => x.p);
-  const y = /(?:عام|سنه|سنة)\s*(20\d{2})/.exec(q)?.[1];
+  const y = /(?:عام|سنه|سنة|في|خلال|لعام|لسنه)\s*(20\d{2})/.exec(q)?.[1] ?? /(^|\s)(20\d{2})(\s|$|؟|\?)/.exec(q)?.[2];
   if (y) return [{ start: `${y}-01-01`, end_exclusive: `${Number(y) + 1}-01-01` }];
   return [];
 }
@@ -71,7 +71,13 @@ function pickDataset(q: string, cat: Catalog, prev: StatRequest | null): Dataset
     let s = 0;
     const unit = normalizeArabic(d.unit_label).replace(/ه$/, '');
     if (unit.length >= 3 && q.includes(unit)) s += 5;
-    for (const w of normalizeArabic(d.name).split(' ')) if (w.length >= 4 && q.includes(w.replace(/^ال/, ''))) s += 3;
+    for (const w of normalizeArabic(d.name).split(' ')) {
+      const stem = w.replace(/^(ال|وال)/, '').replace(/(ات|ه|ي)$/, '');
+      if (stem.length >= 3 && q.includes(stem)) s += 3;
+    }
+    for (const w of normalizeArabic(d.description ?? '').split(' ')) { const stem = w.replace(/^ال/, ''); if (stem.length >= 5 && q.includes(stem)) s += 1; }
+    // Detail datasets answer counts more reliably than pre-aggregated reports.
+    if (!d.period_column && d.columns.some((c) => c.label === 'فترة التقرير')) s -= 1;
     if (/زيار|مراجع|مريض|مرضي/.test(q) && /زيار|مريض/.test(normalizeArabic(d.name + d.unit_label))) s += 4;
     if (/موظف|منسوب|كادر|طاقم|ممرض|اطباء/.test(q) && /موظف|منسوب|كادر/.test(normalizeArabic(d.name + d.unit_label))) s += 4;
     for (const c of d.columns) {
@@ -82,9 +88,10 @@ function pickDataset(q: string, cat: Catalog, prev: StatRequest | null): Dataset
       }
     }
     if (prev && prev.dataset_id === d.id) s += 1;
-    return { d, s };
-  }).sort((a, b) => b.s - a.s);
-  if (scored[0].s === 0 || scored[0].s === scored[1].s) return 'ambiguous';
+    if (/ctas|فرز/.test(q) && d.columns.some((c) => /ctas|فرز/i.test(`${c.label} ${c.source_header ?? ''}`))) s += 8;
+    return { d, s, n: d.row_count };
+  }).sort((a, b) => b.s - a.s || b.n - a.n);
+  if (scored[0].s <= 0) return 'ambiguous';
   return scored[0].d;
 }
 
@@ -115,7 +122,7 @@ export function parseQuestion(raw: string, cat: Catalog, previous?: StatRequest 
   if (picked === 'ambiguous') return { kind: 'clarify', question: 'من أي قاعدة بيانات؟', options: cat.datasets.map((d) => d.name).slice(0, 4) };
   const ds = picked;
 
-  if (/ctas|سي ?تاس|الفرز/.test(q) && !ds.columns.some((c) => /ctas|فرز/.test(colText(c)))) {
+  if (/ctas|سي ?تاس|الفرز/.test(q) && !ds.columns.some((c) => /ctas|فرز/i.test(colText(c)))) {
     return { kind: 'unsupported', reason: `تصنيف CTAS غير موجود في «${ds.name}».` };
   }
 

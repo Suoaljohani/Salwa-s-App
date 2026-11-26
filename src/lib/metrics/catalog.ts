@@ -24,6 +24,11 @@ const KNOWN: Record<string, string> = {
   'Saudi Government': 'حكومي', Selfpay: 'دفع ذاتي',
   Discharged: 'خروج', 'Referred to Another Hospital': 'تحويل إلى مستشفى آخر',
   'SAUDI ARABIA': 'السعودية', true: 'نعم', false: 'لا',
+  Completed: 'مكتمل', 'No Show': 'لم يحضر', Show: 'حضر', Cancelled: 'ملغى', Booked: 'محجوز', Confirmed: 'مؤكد', Arrived: 'وصل',
+  New: 'جديد', 'Follow up visit': 'متابعة', Appointment: 'موعد', 'Walk-In': 'حضور مباشر', 'Walk-in': 'حضور مباشر',
+  APPROVED: 'معتمد', REJECTED: 'مرفوض', PENDING: 'معلق', Yes: 'نعم', No: 'لا', Y: 'نعم',
+  'I - Resuscitation': 'CTAS 1 إنعاش', 'II - Emergent': 'CTAS 2 طارئ جدًا', 'III -Urgent': 'CTAS 3 عاجل', 'IV-Less Urgent': 'CTAS 4 أقل عجلة', 'V-Non Urgent': 'CTAS 5 غير عاجل',
+  Natural: 'طبيعية', Ordered: 'مطلوب', 'Daily Order': 'طلب يومي', 'Discharge Medication': 'دواء خروج',
   'Emergency Medicine': 'طب الطوارئ', 'Diabetes Screening Clinic': 'عيادة فحص السكري', 'Physical Therapy': 'العلاج الطبيعي',
   'MEDICAL REHABILITATION': 'التأهيل الطبي', 'Occupational Therapy': 'العلاج الوظيفي',
 };
