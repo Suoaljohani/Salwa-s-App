@@ -272,9 +272,20 @@ export function parseTable(grid: Grid, override?: { headerRowIndex?: number; col
   // Multi-page exports repeat the title block and the column titles; such rows are not data.
   const preamble = new Set(grid.slice(0, bodyStart).flatMap((r) => (r ?? []).map((c) => norm(cellText(c)))).filter(Boolean));
   const nonEmptyHeaders = headers.filter(Boolean).length;
-  const classified: Kind[] = grid.slice(bodyStart).map((r, i) => {
+  // When the report numbers its records (S no / Sr / م), a row without that number is not a record:
+  // wrapped text continued on the next printed line, or a summary table printed after the list.
+  const bodyRows = grid.slice(bodyStart);
+  const isSerial = (c: Cell) => typeof c === 'number' ? Number.isInteger(c) && c > 0 : /^\d{1,7}$/.test(cellText(c).trim());
+  let anchor = -1;
+  for (let j = 0; j < Math.min(headers.length, 4) && anchor < 0; j++) {
+    if (!/^(s\.?\s*no\.?|sr\.?\s*(no\.?)?|serial(\s*no\.?)?|sl\.?\s*no\.?|#|م|ت|الرقم التسلسلي|رقم تسلسلي)$/i.test(headers[j].trim())) continue;
+    const vals = bodyRows.slice(0, 400).map((r) => r?.[j] ?? null).filter((c) => cellText(c) !== '' && !preamble.has(norm(cellText(c))) && !FOOTER.test(cellText(c)) && !DECLARED.test(cellText(c)));
+    if (vals.length >= 5 && vals.filter(isSerial).length >= vals.length * 0.9) anchor = j;
+  }
+  const classified: Kind[] = bodyRows.map((r, i) => {
     const filled = (r ?? []).filter((c) => cellText(c) !== '');
     if (filled.length === 0) return { kind: 'skip' };
+    if (anchor >= 0 && !isSerial(r?.[anchor] ?? null)) return { kind: 'skip' };
     if ((r ?? []).slice(0, 6).some((c) => FOOTER.test(cellText(c)) || DECLARED.test(cellText(c)))) return { kind: 'skip' };
     const repeats = filled.filter((c) => preamble.has(norm(cellText(c)))).length;
     if (repeats > 0 && repeats >= filled.length / 2) return { kind: 'skip' };

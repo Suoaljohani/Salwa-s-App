@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { readWorkbookGrids } from '../../src/lib/excel/readGrid';
-import { cellText, headerSignature, observedRange, parseTable, proposeCoverage, columnKey, type ParsedTable } from '../../src/lib/import/table';
+import { cellText, headerSignature, observedRange, parseTable, proposeCoverage, columnKey, type ParsedTable, type Grid } from '../../src/lib/import/table';
 import { formatPeriod, addDays } from '../../src/lib/dates';
 import { REPORTS, type ReportSpec } from './reports';
 
@@ -76,9 +76,15 @@ function titleOf(grid: unknown[][]): string {
 export interface Plan { file: string; spec: ReportSpec; parsed: ParsedTable; periodKey: string | null; keyKey: string | null; coverage: { start: string; end_exclusive: string } | null; note: string | null; reportPeriod: string | null }
 
 async function plan(file: string): Promise<Plan | { file: string; skip: string }> {
-  const buf = readFileSync(file);
-  const { sheets } = await readWorkbookGrids(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer);
-  const grid = sheets[0].grid;
+  // Very large exports (hundreds of thousands of merged cells) are pre-converted to a JSON grid
+  // with scripts/bulk-import/xml2grid.py, because loading them fully in ExcelJS takes hours.
+  const grid = file.endsWith('.grid.json')
+    ? (JSON.parse(readFileSync(file, 'utf8')) as Grid)
+    : await (async () => {
+      const buf = readFileSync(file);
+      const { sheets } = await readWorkbookGrids(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer);
+      return sheets[0].grid;
+    })();
   const title = titleOf(grid);
   const spec = REPORTS.find((r) => r.title.test(title.trim()));
   if (!spec) return { file, skip: `تقرير غير معروف: «${title}»` };
@@ -126,7 +132,8 @@ async function main() {
       name: spec.name, unit_label: spec.unit, description: spec.description,
       mode: 'append', period_column: p.periodKey, key_column: p.keyKey, header_signature: headerSignature(parsed.headers), columns,
     } });
-    const raw = readFileSync(file);
+    const orig = file.replace(/\.grid\.json$/, '.xlsx');
+    const raw = readFileSync(orig);
     const sha = createHash('sha256').update(raw).digest('hex');
     const path = `originals/${ds.id}/${sha}.xlsx`;
     let originalNote = '';
@@ -139,7 +146,7 @@ async function main() {
       coverage_note: p.note, imported_by: 'bulk-import',
     };
     const batch = await call({ action: 'create_batch', batch: {
-      dataset_id: ds.id, file_name: basename(file), file_sha256: sha, storage_path: originalNote ? null : path, quality,
+      dataset_id: ds.id, file_name: basename(orig), file_sha256: sha, storage_path: originalNote ? null : path, quality,
       coverage_start: p.coverage?.start ?? null, coverage_end_exclusive: p.coverage?.end_exclusive ?? null, as_of: p.coverage ? null : (parsed.declared.endInclusive ?? null),
     } });
     if (batch.existing) { console.log(`   ⟲ الملف نفسه موجود (${batch.status})؛ لم يُكرر.`); continue; }

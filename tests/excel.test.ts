@@ -79,6 +79,21 @@ describe('generic import', () => {
     const t = parseTable([headers, ...body]);
     expect(JSON.stringify(t.rows)).not.toMatch(/Person|887766|1234567/);
   });
+  test('numbered report: wrapped-text lines and a trailing summary table are not records', () => {
+    const headers = ['S no', 'Visit Date', 'MRN', 'Department', 'CTAS Level', 'Complaint', 'Doctor'];
+    const rec = (i: number) => [i, `0${(i % 9) + 1}-01-2025 10:00`, `M${i}`, 'Emergency', 'V-Non Urgent', 'Cough and fever', 'DR A'];
+    const grid = [
+      ['ER Patient Journey Report'], headers,
+      ...Array.from({ length: 30 }, (_, i) => rec(i + 1)),
+      [null, null, null, 'Government', null, 'continued text', 'SALEH'],
+      ['ER Patient Journey Report'], headers,
+      ...Array.from({ length: 30 }, (_, i) => rec(i + 31)),
+      [null, 'L1', 'L2', 'L3', 'L4', 'L5', 'LWBS'],
+      [null, '01-01-2025', 0, 1, 5, 9, 0],
+    ];
+    const t = parseTable(grid);
+    expect(t.rows.length).toBe(60);
+  });
   test('age text and coverage cut on the last day', () => {
     expect(parseAgeYears('21 Y 2 M 18 D')).toBe(21);
     expect(parseAgeYears('64 Y ')).toBe(64);
