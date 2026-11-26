@@ -12,6 +12,7 @@ import { REPORTS, type ReportSpec } from './reports';
 
 const args = process.argv.slice(2);
 const mode = args.includes('--import') ? 'import' : 'dry';
+const REPLACE = args.includes('--replace');
 const listIdx = args.indexOf('--list');
 const files = listIdx >= 0 ? readFileSync(args[listIdx + 1], 'utf8').split('\n').map((x) => x.trim()).filter(Boolean) : args.filter((a) => !a.startsWith('--'));
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -55,6 +56,10 @@ async function call(body: any): Promise<any> {
       if (live.length && live[0].status === 'staged') {
         // An interrupted earlier run: discard its partial staging and start clean.
         await http('POST', '/rest/v1/rpc/ds_close', { p_batch: live[0].id, p_status: 'rejected' });
+      } else if (live.length && REPLACE) {
+        // Re-import after a parser fix: roll the old version back and drop its rows (they were mis-parsed).
+        await http('POST', '/rest/v1/rpc/ds_close', { p_batch: live[0].id, p_status: 'rolled_back' });
+        await http('DELETE', `/rest/v1/dataset_rows?batch_id=eq.${live[0].id}`);
       } else if (live.length) return { id: live[0].id, status: live[0].status, existing: true };
       const [created] = await http('POST', '/rest/v1/dataset_batches', b, { Prefer: 'return=representation' });
       return { id: created.id, status: 'staged', existing: false };
